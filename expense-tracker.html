@@ -190,6 +190,14 @@
         html[data-theme="light"] .bottom-nav { background: rgba(255,255,255,0.95); }
         html[data-theme="light"] .logo h1 { background: linear-gradient(135deg, #d97706, #ea580c); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
 
+        /* ── Toggle switch ── */
+        .toggle-switch { position: relative; display: inline-block; width: 44px; height: 24px; flex-shrink: 0; }
+        .toggle-switch input { opacity: 0; width: 0; height: 0; }
+        .toggle-slider { position: absolute; cursor: pointer; inset: 0; background: var(--surface3); border-radius: 24px; transition: .2s; }
+        .toggle-slider::before { content: ''; position: absolute; width: 18px; height: 18px; left: 3px; bottom: 3px; background: #fff; border-radius: 50%; transition: .2s; }
+        input:checked + .toggle-slider { background: var(--accent); }
+        input:checked + .toggle-slider::before { transform: translateX(20px); }
+
         /* ── PIN screen ── */
         .pin-screen { position: fixed; inset: 0; background: var(--bg); z-index: 900; display: flex; flex-direction: column; align-items: center; justify-content: center; }
         .pin-logo { text-align: center; margin-bottom: 8px; }
@@ -359,6 +367,7 @@
     <div class="nav-item" onclick="openSyncModal()">☁️ &nbsp;Sync Settings</div>
     <div class="nav-item" id="theme-btn" onclick="toggleTheme()">☀️ &nbsp;Light mode</div>
     <div class="nav-item" onclick="openPinSettings()">🔒 &nbsp;PIN Lock</div>
+    <div class="nav-item" onclick="openReminderModal()">🔔 &nbsp;Reminders</div>
     <div class="sync-badge" id="sync-badge" onclick="openSyncModal()">
         <span class="sync-dot" id="sync-dot" style="background:#94a3b8"></span>
         <span id="sync-label">Not connected</span>
@@ -657,6 +666,17 @@
             <div class="settings-row-right">›</div>
         </div>
 
+        <div class="settings-row" onclick="closeSettingsSheet();openReminderModal()">
+            <div class="settings-row-left">
+                <div class="settings-row-icon" style="background:rgba(251,191,36,.15)">🔔</div>
+                <div>
+                    <div class="settings-row-title">Reminders</div>
+                    <div class="settings-row-sub" id="settings-reminder-sub">Not set</div>
+                </div>
+            </div>
+            <div class="settings-row-right">›</div>
+        </div>
+
         <div class="settings-row" onclick="closeSettingsSheet();exportCSV()">
             <div class="settings-row-left">
                 <div class="settings-row-icon" style="background:rgba(34,197,94,.15)">⬇️</div>
@@ -670,6 +690,52 @@
 
         <div class="modal-footer" style="margin-top:8px">
             <button class="btn btn-ghost" style="width:100%" onclick="closeSettingsSheet()">Close</button>
+        </div>
+    </div>
+</div>
+
+<!-- ═══ Reminder Modal ═══ -->
+<div class="modal-overlay" id="reminder-modal">
+    <div class="modal" style="max-width:480px">
+        <div class="modal-handle"></div>
+        <h2>🔔 Reminders</h2>
+        <p style="font-size:13px;color:var(--text2);margin-bottom:16px">Get notified to log your expenses on a schedule.</p>
+
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 0;border-bottom:1px solid var(--border)">
+            <div>
+                <div style="font-size:14px;font-weight:600;color:var(--text)">Enable reminders</div>
+                <div style="font-size:12px;color:var(--text2);margin-top:2px" id="reminder-status-text">Off</div>
+            </div>
+            <label class="toggle-switch">
+                <input type="checkbox" id="reminder-toggle" onchange="onReminderToggle()">
+                <span class="toggle-slider"></span>
+            </label>
+        </div>
+
+        <div id="reminder-settings" style="display:none">
+            <div class="form-row" style="margin-top:16px">
+                <div class="form-group">
+                    <label class="form-label">Time</label>
+                    <input class="form-input" type="time" id="reminder-time" value="20:00" onchange="onReminderSettingChange()">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Frequency</label>
+                    <select class="form-input" id="reminder-frequency" onchange="onReminderSettingChange()">
+                        <option value="daily">Every day</option>
+                        <option value="weekdays">Weekdays only</option>
+                        <option value="weekly">Once a week (Mon)</option>
+                    </select>
+                </div>
+            </div>
+            <div id="reminder-next" style="font-size:12px;color:var(--text2);margin-top:10px;padding:10px 12px;background:var(--surface2);border-radius:10px"></div>
+        </div>
+
+        <div id="reminder-permission-warn" style="display:none;font-size:12px;color:var(--accent);margin-top:12px;padding:10px 12px;background:rgba(245,158,11,.1);border-radius:8px;border:1px solid rgba(245,158,11,.2)">
+            ⚠️ Notification permission denied. Please allow notifications in your browser settings and reload.
+        </div>
+
+        <div class="modal-footer" style="margin-top:16px">
+            <button class="btn btn-ghost" style="width:100%" onclick="closeReminderModal()">Close</button>
         </div>
     </div>
 </div>
@@ -2072,6 +2138,135 @@ async function initFirebase() {
 
 // Auto-connect on load
 initFirebase();
+
+// ── Reminders ──
+function loadReminderSettings() {
+  return JSON.parse(localStorage.getItem('expiq_reminders') || 'null') || {
+    enabled: false, time: '20:00', frequency: 'daily', lastNotified: 0
+  };
+}
+function saveReminderSettings(s) { localStorage.setItem('expiq_reminders', JSON.stringify(s)); }
+
+function openReminderModal() {
+  updateReminderModalUI();
+  document.getElementById('reminder-modal').style.display = 'flex';
+}
+function closeReminderModal() { document.getElementById('reminder-modal').style.display = 'none'; }
+
+function freqLabel(f) { return f === 'daily' ? 'Daily' : f === 'weekdays' ? 'Weekdays' : 'Weekly'; }
+
+function formatTime12h(t) {
+  const [h, m] = t.split(':').map(Number);
+  return `${h % 12 || 12}:${String(m).padStart(2,'0')} ${h >= 12 ? 'PM' : 'AM'}`;
+}
+
+function getNextReminderText(s) {
+  const now = new Date();
+  const [h, m] = s.time.split(':').map(Number);
+  for (let i = 0; i < 8; i++) {
+    const d = new Date(now); d.setDate(d.getDate() + i); d.setHours(h, m, 0, 0);
+    if (d <= now) continue;
+    const dow = d.getDay();
+    if (s.frequency === 'weekdays' && (dow === 0 || dow === 6)) continue;
+    if (s.frequency === 'weekly' && dow !== 1) continue;
+    if (i === 0) return `Today at ${formatTime12h(s.time)}`;
+    if (i === 1) return `Tomorrow at ${formatTime12h(s.time)}`;
+    return ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dow] + ` at ${formatTime12h(s.time)}`;
+  }
+  return formatTime12h(s.time);
+}
+
+function updateReminderModalUI() {
+  const s = loadReminderSettings();
+  document.getElementById('reminder-toggle').checked = s.enabled;
+  document.getElementById('reminder-time').value = s.time;
+  document.getElementById('reminder-frequency').value = s.frequency;
+  document.getElementById('reminder-settings').style.display = s.enabled ? 'block' : 'none';
+  const denied = 'Notification' in window && Notification.permission === 'denied';
+  document.getElementById('reminder-permission-warn').style.display = denied ? 'block' : 'none';
+  const nextText = s.enabled ? getNextReminderText(s) : '';
+  document.getElementById('reminder-status-text').textContent = s.enabled ? nextText : 'Off';
+  const nextEl = document.getElementById('reminder-next');
+  if (nextEl && s.enabled) nextEl.textContent = '⏰ Next: ' + nextText;
+  const sub = document.getElementById('settings-reminder-sub');
+  if (sub) sub.textContent = s.enabled ? `${formatTime12h(s.time)} · ${freqLabel(s.frequency)}` : 'Not set';
+}
+
+async function onReminderToggle() {
+  const enabled = document.getElementById('reminder-toggle').checked;
+  if (enabled) {
+    if (!('Notification' in window)) {
+      document.getElementById('reminder-toggle').checked = false;
+      toast('Notifications not supported in this browser'); return;
+    }
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') {
+      document.getElementById('reminder-toggle').checked = false;
+      document.getElementById('reminder-permission-warn').style.display = 'block'; return;
+    }
+  }
+  const s = loadReminderSettings();
+  s.enabled = enabled;
+  saveReminderSettings(s);
+  if (enabled) { scheduleNextReminder(s); toast('Reminders enabled ✓'); }
+  else toast('Reminders disabled');
+  updateReminderModalUI();
+}
+
+function onReminderSettingChange() {
+  const s = loadReminderSettings();
+  s.time = document.getElementById('reminder-time').value;
+  s.frequency = document.getElementById('reminder-frequency').value;
+  saveReminderSettings(s);
+  scheduleNextReminder(s);
+  updateReminderModalUI();
+}
+
+function scheduleNextReminder(s) {
+  if (!s.enabled || !('Notification' in window) || Notification.permission !== 'granted') return;
+  const now = new Date();
+  const [h, m] = s.time.split(':').map(Number);
+  for (let i = 0; i < 8; i++) {
+    const d = new Date(now); d.setDate(d.getDate() + i); d.setHours(h, m, 0, 0);
+    if (d <= now) continue;
+    const dow = d.getDay();
+    if (s.frequency === 'weekdays' && (dow === 0 || dow === 6)) continue;
+    if (s.frequency === 'weekly' && dow !== 1) continue;
+    const delay = d.getTime() - now.getTime();
+    if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+      navigator.serviceWorker.controller.postMessage({
+        type: 'SCHEDULE_NOTIFICATION', delay,
+        title: 'ExpendIQ 💸', body: "Don't forget to log today's expenses!"
+      });
+    } else {
+      setTimeout(() => new Notification('ExpendIQ 💸', {
+        body: "Don't forget to log today's expenses!", icon: './icon-192.png'
+      }), delay);
+    }
+    break;
+  }
+}
+
+function checkReminder() {
+  const s = loadReminderSettings();
+  if (!s.enabled || !('Notification' in window) || Notification.permission !== 'granted') return;
+  const now = new Date();
+  const [h, m] = s.time.split(':').map(Number);
+  const todayTarget = new Date(now); todayTarget.setHours(h, m, 0, 0);
+  const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
+  const lastStart = new Date(s.lastNotified); lastStart.setHours(0, 0, 0, 0);
+  if (lastStart.getTime() === todayStart.getTime()) return;
+  const dow = now.getDay();
+  if (s.frequency === 'weekdays' && (dow === 0 || dow === 6)) return;
+  if (s.frequency === 'weekly' && dow !== 1) return;
+  if (now < todayTarget) { scheduleNextReminder(s); return; }
+  new Notification('ExpendIQ 💸', { body: "Don't forget to log today's expenses!", icon: './icon-192.png' });
+  s.lastNotified = Date.now();
+  saveReminderSettings(s);
+}
+
+checkReminder();
+document.addEventListener('visibilitychange', () => { if (!document.hidden) checkReminder(); });
 
 // ── Online / offline event handlers ──
 window.addEventListener('offline', () => {

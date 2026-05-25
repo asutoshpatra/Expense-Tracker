@@ -1,4 +1,4 @@
-const CACHE = 'expendiq-v1';
+const CACHE = 'expendiq-v2';
 
 // CDN assets — version-pinned, never change → cache-first is safe
 const CDN_ASSETS = [
@@ -74,4 +74,13 @@ self.addEventListener('fetch', e => {
       }).catch(() => cached);
     })
   );
+});
+
+self.addEventListener('message', e => {
+  if (e.data?.type === 'SCHEDULE_NOTIFICATION') {
+    const { delay, title, body } = e.data;
+    setTimeout(() => {
+      self.registration.showNotification(title, { body, icon: './icon-192.png' });
+    }, delay);
+  }
 });
