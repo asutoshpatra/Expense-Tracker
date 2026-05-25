@@ -1,0 +1,22 @@
+# ── Personal / secret files ──────────────────────────────
+# firebase-config.js is committed with placeholder values so new users
+# know what to fill in. If you add your real credentials and want to
+# keep them private, uncomment the line below:
+# firebase-config.js
+
+# ── OS junk ──────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Editor ───────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Temp / local ─────────────────────────────────────────
+*.xlsx
+*.csv
+~$*
+.claude/
