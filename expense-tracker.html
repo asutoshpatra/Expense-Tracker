@@ -1917,9 +1917,11 @@ async function startSync() {
 
   // Pull remote data — first real network call; surfaces permission errors
   let docRef;
+  let initialGetOk = false;
   try {
     docRef = db.collection('expiq').doc(FB_DOC);
     const snap = await docRef.get();
+    initialGetOk = true;
     if (snap.exists) {
       const remote = snap.data();
       const localTs = DB._ts || 0;
@@ -1944,16 +1946,21 @@ async function startSync() {
       localStorage.setItem('expiq_v2', JSON.stringify(DB));
     }
   } catch(e) {
-    const isPermission = e.code === 'permission-denied' || (e.message||'').includes('permission');
-    const msg = isPermission
-      ? '⚠️ Firestore access denied.<br>Go to <strong>Firebase Console → Firestore → Rules</strong> and publish:<br><code style="font-size:11px">allow read, write: if true;</code>'
-      : '⚠️ Firestore error: ' + (e.message || e.code);
-    setSyncError(msg);
+    const isOffline = e.code === 'unavailable' || (e.message||'').toLowerCase().includes('offline');
+    if (!isOffline) {
+      const isPermission = e.code === 'permission-denied' || (e.message||'').includes('permission');
+      const msg = isPermission
+        ? '⚠️ Firestore access denied.<br>Go to <strong>Firebase Console → Firestore → Rules</strong> and publish:<br><code style="font-size:11px">allow read, write: if true;</code>'
+        : '⚠️ Firestore error: ' + (e.message || e.code);
+      setSyncError(msg);
+      setSyncBadge('offline');
+      return;
+    }
+    // Offline — don't return. Fall through to set up onSnapshot which auto-reconnects.
     setSyncBadge('offline');
-    return;
   }
 
-  // Real-time listener — updates app whenever another device saves
+  // Real-time listener — updates app whenever another device saves, and auto-reconnects
   if (fbUnsub) fbUnsub();
   fbUnsub = docRef.onSnapshot(snap => {
     if (!snap.exists) return;
@@ -1964,14 +1971,15 @@ async function startSync() {
       DB._ts = remote.ts;
       localStorage.setItem('expiq_v2', JSON.stringify(DB));
       renderCurrent();
-      setSyncBadge('synced');
     }
+    setSyncBadge('synced');
+    setSyncError('');
   }, e => {
     setSyncBadge('offline');
     setSyncError('⚠️ Sync lost: ' + (e.code || e.message));
   });
 
-  setSyncBadge('synced');
+  if (initialGetOk) setSyncBadge('synced');
   updateSyncModal();
 }
 
