@@ -1010,6 +1010,13 @@ function customTotal(T) {
   return Object.entries(T).reduce((s,[k,v]) =>
     !['fixed','grocery','personal','grand'].includes(k) ? s+v : s, 0);
 }
+// Returns [{key, val}] for each custom category with amount > 0
+function customEntries(T) {
+  return Object.entries(T)
+    .filter(([k,v]) => !['fixed','grocery','personal','grand'].includes(k) && v > 0)
+    .map(([k,v]) => ({key:k, val:v}));
+}
+const CUSTOM_PALETTE = ['#f59e0b','#ec4899','#06b6d4','#10b981','#f43f5e','#fb923c','#a3e635','#38bdf8'];
 
 function toast(msg) {
   const el = document.getElementById('toast');
@@ -1203,18 +1210,18 @@ function renderDashboard() {
   document.getElementById('d-personal').textContent = fmt(T.personal);
   document.getElementById('d-personal-c').textContent = exp.filter(e=>e.category==='personal').length + ' items';
 
-  // Pie — include custom categories as "Other"
+  // Pie — each category (including custom) gets its own named slice
   destroyChart('pie');
   if(grand > 0) {
-    const ctotal = customTotal(T);
-    const pieLabels = ['Fixed','Grocery','Personal', ...(ctotal>0?['Other']:[])];
-    const pieData   = [T.fixed,T.grocery,T.personal, ...(ctotal>0?[ctotal]:[])];
-    const pieColors = ['#3b82f6','#22c55e','#a855f7','#f59e0b'];
+    const custom = customEntries(T);
+    const pieLabels = ['Fixed','Grocery','Personal', ...custom.map(c=>cap(c.key))];
+    const pieData   = [T.fixed,T.grocery,T.personal, ...custom.map(c=>c.val)];
+    const pieColors = ['#3b82f6','#22c55e','#a855f7', ...custom.map((_,i)=>CUSTOM_PALETTE[i%CUSTOM_PALETTE.length])];
     charts.pie = new Chart(document.getElementById('pieChart'), {
       type: 'doughnut',
       data: {
         labels: pieLabels,
-        datasets: [{ data:pieData, backgroundColor:pieColors.slice(0,pieLabels.length), borderWidth:0, hoverOffset:8 }]
+        datasets: [{ data:pieData, backgroundColor:pieColors, borderWidth:0, hoverOffset:8 }]
       },
       options: {
         responsive:true,
@@ -1226,19 +1233,18 @@ function renderDashboard() {
     });
   }
 
-  // Category bars — include custom categories
-  const ctotal = customTotal(T);
+  // Category bars — each category (including custom) gets its own named bar
+  const custom = customEntries(T);
   const cats = [
-    {key:'fixed',   label:'🏠 Fixed',    color:'#3b82f6'},
-    {key:'grocery', label:'🛒 Grocery',  color:'#22c55e'},
-    {key:'personal',label:'🎯 Personal', color:'#a855f7'},
-    ...(ctotal>0 ? [{key:'_other', label:'✨ Other', color:'#f59e0b', val:ctotal}] : []),
+    {key:'fixed',   label:'🏠 Fixed',    color:'#3b82f6', val:T.fixed},
+    {key:'grocery', label:'🛒 Grocery',  color:'#22c55e', val:T.grocery},
+    {key:'personal',label:'🎯 Personal', color:'#a855f7', val:T.personal},
+    ...custom.map((c,i) => ({key:c.key, label:'✨ '+cap(c.key), color:CUSTOM_PALETTE[i%CUSTOM_PALETTE.length], val:c.val})),
   ];
   document.getElementById('cat-bars').innerHTML = cats.map(c=>{
-    const val = c.val !== undefined ? c.val : T[c.key];
-    const pct = grand>0 ? (val/grand*100).toFixed(1) : 0;
+    const pct = grand>0 ? (c.val/grand*100).toFixed(1) : 0;
     return `<div class="cat-bar-item">
-      <div class="cat-bar-header"><span>${c.label}</span><span>${fmt(val)} <span style="color:var(--text2)">${pct}%</span></span></div>
+      <div class="cat-bar-header"><span>${c.label}</span><span>${fmt(c.val)} <span style="color:var(--text2)">${pct}%</span></span></div>
       <div class="cat-bar-track"><div class="cat-bar-fill" style="width:${pct}%;background:${c.color}"></div></div>
     </div>`;
   }).join('');
@@ -1485,29 +1491,35 @@ function renderReports() {
   destroyChart('allPie');
   const all = {fixed:0,grocery:0,personal:0};
   keys.forEach(k=>{ const T=totals(k); Object.entries(T).forEach(([cat,v])=>{ if(cat==='grand') return; all[cat]=(all[cat]||0)+v; }); });
-  const allCustom = Object.entries(all).reduce((s,[k,v])=>!['fixed','grocery','personal'].includes(k)?s+v:s, 0);
-  const allLabels = ['Fixed','Grocery','Personal',...(allCustom>0?['Other']:[])];
-  const allData   = [all.fixed,all.grocery,all.personal,...(allCustom>0?[allCustom]:[])];
+  const allCustomEntries = Object.entries(all).filter(([k,v])=>!['fixed','grocery','personal'].includes(k)&&v>0);
+  const allLabels = ['Fixed','Grocery','Personal', ...allCustomEntries.map(([k])=>cap(k))];
+  const allData   = [all.fixed,all.grocery,all.personal, ...allCustomEntries.map(([,v])=>v)];
+  const allColors = ['#3b82f6','#22c55e','#a855f7', ...allCustomEntries.map((_,i)=>CUSTOM_PALETTE[i%CUSTOM_PALETTE.length])];
   charts.allPie = new Chart(document.getElementById('allTimePie'), {
     type:'doughnut',
-    data:{ labels:allLabels, datasets:[{ data:allData, backgroundColor:['#3b82f6','#22c55e','#a855f7','#f59e0b'].slice(0,allLabels.length), borderWidth:0 }] },
+    data:{ labels:allLabels, datasets:[{ data:allData, backgroundColor:allColors, borderWidth:0 }] },
     options:{ responsive:true, plugins:{ legend:{ position:'bottom', labels:{color:cv('--text2'), padding:14} } } }
   });
 
   document.getElementById('monthly-summary').innerHTML = `
     <div class="table-wrap"><table>
-      <thead><tr><th>Month</th><th>Fixed</th><th>Grocery</th><th>Personal</th><th>Other</th><th>Total</th></tr></thead>
-      <tbody>${keys.map(k=>{
-        const T=totals(k), other=customTotal(T);
-        return `<tr>
-          <td style="white-space:nowrap">${monthLabel(k)}</td>
-          <td style="color:#3b82f6">${fmt(T.fixed)}</td>
-          <td style="color:#22c55e">${fmt(T.grocery)}</td>
-          <td style="color:#a855f7">${fmt(T.personal)}</td>
-          <td style="color:#f59e0b">${other>0?fmt(other):'—'}</td>
-          <td><strong>${fmt(T.grand)}</strong></td>
-        </tr>`;
-      }).join('')}</tbody>
+      ${(()=>{
+        const allT = keys.map(k=>totals(k));
+        const customCatNames = [...new Set(allT.flatMap(T=>Object.keys(T).filter(k=>!['fixed','grocery','personal','grand'].includes(k)&&T[k]>0)))].sort();
+        const head = `<thead><tr><th>Month</th><th>Fixed</th><th>Grocery</th><th>Personal</th>${customCatNames.map(n=>`<th>${cap(n)}</th>`).join('')}<th>Total</th></tr></thead>`;
+        const body = `<tbody>${keys.map((k,i)=>{
+          const T=allT[i];
+          return `<tr>
+            <td style="white-space:nowrap">${monthLabel(k)}</td>
+            <td style="color:#3b82f6">${fmt(T.fixed)}</td>
+            <td style="color:#22c55e">${fmt(T.grocery)}</td>
+            <td style="color:#a855f7">${fmt(T.personal)}</td>
+            ${customCatNames.map((n,ci)=>`<td style="color:${CUSTOM_PALETTE[ci%CUSTOM_PALETTE.length]}">${T[n]>0?fmt(T[n]):'—'}</td>`).join('')}
+            <td><strong>${fmt(T.grand)}</strong></td>
+          </tr>`;
+        }).join('')}</tbody>`;
+        return head+body;
+      })()}
     </table></div>`;
 }
 
