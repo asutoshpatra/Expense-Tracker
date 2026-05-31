@@ -501,7 +501,7 @@
                             <option value="personal">🎯 Personal</option>
                             <option value="_custom">✏️ Custom…</option>
                         </select>
-                        <input type="text" id="il-custom-cat" class="form-input" placeholder="e.g. Travel, Medical…" autocomplete="off" style="display:none;margin-top:6px">
+                        <input type="text" id="il-custom-cat" class="form-input" placeholder="e.g. Travel, Medical…" list="custom-cat-suggestions" style="display:none;margin-top:6px">
                     </div>
                     <div class="form-group" style="margin:0">
                         <label class="form-label">Date</label>
@@ -694,6 +694,9 @@
     </div>
 </div>
 
+<!-- Shared datalist for custom category autocomplete -->
+<datalist id="custom-cat-suggestions"></datalist>
+
 <!-- ═══ Reminder Modal ═══ -->
 <div class="modal-overlay" id="reminder-modal">
     <div class="modal" style="max-width:480px">
@@ -786,7 +789,7 @@
                     <option value="personal">🎯 Personal</option>
                     <option value="_custom">✏️ Custom…</option>
                 </select>
-                <input type="text" id="exp-custom-cat" class="form-input" placeholder="e.g. Travel, Medical…" autocomplete="off" style="display:none;margin-top:6px">
+                <input type="text" id="exp-custom-cat" class="form-input" placeholder="e.g. Travel, Medical…" list="custom-cat-suggestions" style="display:none;margin-top:6px">
             </div>
         </div>
         <div class="form-group">
@@ -920,6 +923,24 @@ const icon = c  => ({fixed:'🏠',grocery:'🛒',personal:'🎯'}[c] || '🏷️
 const STANDARD_CATS = new Set(['fixed','grocery','personal']);
 const badgeCls = c => STANDARD_CATS.has(c) ? `badge-${c}` : 'badge-other';
 
+// Return sorted list of all custom category names ever used across all months
+function getUsedCustomCats() {
+  const cats = new Set();
+  Object.values(DB.months).forEach(exps => {
+    (exps || []).forEach(e => {
+      if (e.category && !STANDARD_CATS.has(e.category)) cats.add(e.category);
+    });
+  });
+  return [...cats].sort();
+}
+
+// Populate the shared datalist for custom category autocomplete
+function refreshCustomCatSuggestions() {
+  const dl = document.getElementById('custom-cat-suggestions');
+  if (!dl) return;
+  dl.innerHTML = getUsedCustomCats().map(c => `<option value="${c}">`).join('');
+}
+
 // Show/hide the custom category text input when "Custom…" is chosen
 function toggleCustomCat(prefix) {
   const selId    = prefix === 'il' ? 'il-cat' : 'exp-category';
@@ -929,6 +950,7 @@ function toggleCustomCat(prefix) {
   if (!sel || !inp) return;
   if (sel.value === '_custom') {
     inp.style.display = 'block';
+    refreshCustomCatSuggestions();
     inp.focus();
   } else {
     inp.style.display = 'none';
@@ -1303,7 +1325,11 @@ function renderBudget() {
   const T = totals(curMonth);
   const grand = T.grand;
   const totalB = B.total || 0;
-  const allocated = (B.fixed||0) + (B.grocery||0) + (B.personal||0);
+  const customCatKeys = [...new Set([
+    ...customEntries(T).map(e => e.key),
+    ...Object.keys(B).filter(k => !['total','fixed','grocery','personal'].includes(k) && (B[k]||0) > 0)
+  ])].sort();
+  const allocated = (B.fixed||0) + (B.grocery||0) + (B.personal||0) + customCatKeys.reduce((s,k) => s+(B[k]||0), 0);
   const unalloc = totalB - allocated;
   const totalPct = totalB > 0 ? Math.min(grand / totalB * 100, 100).toFixed(0) : 0;
   const totalOver = grand > totalB && totalB > 0;
@@ -1354,6 +1380,7 @@ function renderBudget() {
         <span class="alloc-chip chip-fixed">🏠 ${fmt(B.fixed||0)}</span>
         <span class="alloc-chip chip-grocery">🛒 ${fmt(B.grocery||0)}</span>
         <span class="alloc-chip chip-personal">🎯 ${fmt(B.personal||0)}</span>
+        ${customCatKeys.map((k,i) => `<span class="alloc-chip" style="background:${CUSTOM_PALETTE[i%CUSTOM_PALETTE.length]}22;color:${CUSTOM_PALETTE[i%CUSTOM_PALETTE.length]};border:1px solid ${CUSTOM_PALETTE[i%CUSTOM_PALETTE.length]}44">${cap(k)} ${fmt(B[k]||0)}</span>`).join('')}
         ${unalloc > 0 ? `<span class="alloc-chip chip-unalloc">+ ${fmt(unalloc)} free</span>` : ''}
         ${unalloc < 0 ? `<span class="alloc-chip chip-over">⚠ ${fmt(Math.abs(unalloc))} over-allocated</span>` : ''}
       </div>
@@ -1366,7 +1393,7 @@ function renderBudget() {
     {key:'personal',label:'Personal',        icon:'🎯', color:'#a855f7'},
   ];
 
-  document.getElementById('budget-cards').innerHTML = cats.map(c=>{
+  const standardCards = cats.map(c=>{
     const spent = T[c.key]||0, budget = B[c.key]||0;
     const rem   = budget - spent;
     const pct   = budget>0 ? Math.min(spent/budget*100,100).toFixed(0) : 0;
@@ -1390,19 +1417,65 @@ function renderBudget() {
       <div class="budget-meta">
         <div class="budget-row"><span>Spent</span><span>${fmt(spent)}</span></div>
         <div class="budget-row"><span>Budget</span><span>${fmt(budget)}</span></div>
-        <div class="budget-row"><span>Remaining</span><span class="${over?'over':'under'}">${over?'− ':''}${fmt(rem)}</span></div>
+        <div class="budget-row"><span>Remaining</span><span class="${over?'over':'under'}">${over?'− ':''}${fmt(Math.abs(rem))}</span></div>
       </div>
     </div>`;
   }).join('');
+
+  const customCards = customCatKeys.map((catKey, i) => {
+    const color  = CUSTOM_PALETTE[i % CUSTOM_PALETTE.length];
+    const spent  = T[catKey] || 0;
+    const budget = B[catKey] || 0;
+    const rem    = budget - spent;
+    const pct    = budget > 0 ? Math.min(spent / budget * 100, 100).toFixed(0) : 0;
+    const over   = rem < 0;
+    const ofTotal = totalB > 0 ? (budget / totalB * 100).toFixed(0) : '—';
+    return `<div class="budget-card" style="border-top:3px solid ${color}">
+      <h3 style="color:${color}">${cap(catKey)}</h3>
+      <div style="display:flex;align-items:center;gap:6px">
+        <span style="color:var(--text2)">$</span>
+        <input class="form-input" type="number" value="${budget}" min="0" step="1" inputmode="numeric"
+          onchange="updateBudget('${catKey}',this.value)"
+          style="font-size:20px;font-weight:700;background:var(--bg)">
+      </div>
+      ${totalB > 0 ? `<div style="font-size:11px;color:var(--text2);margin-top:4px">${ofTotal}% of total budget</div>` : ''}
+      <div style="margin:12px 0 4px">
+        <div class="cat-bar-track">
+          <div class="cat-bar-fill" style="width:${pct}%;background:${over?'#ef4444':color}"></div>
+        </div>
+        <div style="text-align:right;font-size:11px;color:var(--text2);margin-top:3px">${pct}% used</div>
+      </div>
+      <div class="budget-meta">
+        <div class="budget-row"><span>Spent</span><span>${fmt(spent)}</span></div>
+        <div class="budget-row"><span>Budget</span><span>${fmt(budget)}</span></div>
+        <div class="budget-row"><span>Remaining</span><span class="${over?'over':'under'}">${over?'− ':''}${fmt(Math.abs(rem))}</span></div>
+      </div>
+    </div>`;
+  }).join('');
+
+  document.getElementById('budget-cards').innerHTML = standardCards + customCards;
+
+  // Build chart data including custom categories
+  const chartLabels      = ['Fixed','Grocery','Personal', ...customCatKeys.map(k => cap(k))];
+  const chartBudgetData  = [B.fixed||0, B.grocery||0, B.personal||0, ...customCatKeys.map(k => B[k]||0)];
+  const chartActualData  = [T.fixed||0, T.grocery||0, T.personal||0, ...customCatKeys.map(k => T[k]||0)];
+  const chartActualColors = [
+    'rgba(59,130,246,.7)', 'rgba(34,197,94,.7)', 'rgba(168,85,247,.7)',
+    ...customCatKeys.map((_,i) => {
+      const h = CUSTOM_PALETTE[i % CUSTOM_PALETTE.length];
+      const r = parseInt(h.slice(1,3),16), g = parseInt(h.slice(3,5),16), b = parseInt(h.slice(5,7),16);
+      return `rgba(${r},${g},${b},.7)`;
+    })
+  ];
 
   destroyChart('budget');
   charts.budget = new Chart(document.getElementById('budgetChart'), {
     type:'bar',
     data:{
-      labels:['Fixed','Grocery','Personal'],
+      labels: chartLabels,
       datasets:[
-        { label:'Budget', data:[B.fixed,B.grocery,B.personal], backgroundColor:'rgba(148,163,184,.25)', borderColor:cv('--text2'), borderWidth:1, borderRadius:6 },
-        { label:'Actual', data:[T.fixed,T.grocery,T.personal], backgroundColor:['rgba(59,130,246,.7)','rgba(34,197,94,.7)','rgba(168,85,247,.7)'], borderRadius:6 }
+        { label:'Budget', data: chartBudgetData, backgroundColor:'rgba(148,163,184,.25)', borderColor:cv('--text2'), borderWidth:1, borderRadius:6 },
+        { label:'Actual', data: chartActualData, backgroundColor: chartActualColors, borderRadius:6 }
       ]
     },
     options:{
