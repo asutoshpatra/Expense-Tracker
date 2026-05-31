@@ -1001,7 +1001,14 @@ function getBudget(key)   { return DB.budgets[key] || {...DEFAULT_BUDGETS}; }
 function totals(key) {
   const out = {fixed:0, grocery:0, personal:0};
   getExpenses(key).forEach(e => out[e.category] = (out[e.category]||0) + e.amount);
+  // grand = sum of ALL categories including custom ones
+  out.grand = Object.entries(out).reduce((s,[,v]) => s+v, 0);
   return out;
+}
+// Sum of all custom (non-standard) category amounts in a totals object
+function customTotal(T) {
+  return Object.entries(T).reduce((s,[k,v]) =>
+    !['fixed','grocery','personal','grand'].includes(k) ? s+v : s, 0);
 }
 
 function toast(msg) {
@@ -1043,7 +1050,7 @@ function getPrevMonthKey(key) {
 function generateInsights() {
   const exp   = getExpenses(curMonth);
   const T     = totals(curMonth);
-  const grand = T.fixed + T.grocery + T.personal;
+  const grand = T.grand;
   const B     = getBudget(curMonth);
   const out   = [];
 
@@ -1064,7 +1071,7 @@ function generateInsights() {
   const prevKey = getPrevMonthKey(curMonth);
   if (DB.months[prevKey]?.length) {
     const pT    = totals(prevKey);
-    const pGrand = pT.fixed + pT.grocery + pT.personal;
+    const pGrand = pT.grand;
     if (pGrand > 0 && grand > 0) {
       const diff = grand - pGrand;
       const pct  = Math.abs(diff / pGrand * 100).toFixed(0);
@@ -1110,14 +1117,13 @@ function generateInsights() {
     }
   }
 
-  // Dominant category
+  // Dominant category (includes custom categories)
   if (grand > 0) {
-    const dom = [
-      { cat:'fixed',    pct: T.fixed/grand*100 },
-      { cat:'grocery',  pct: T.grocery/grand*100 },
-      { cat:'personal', pct: T.personal/grand*100 },
-    ].sort((a,b)=>b.pct-a.pct)[0];
-    if (dom.pct > 70)
+    const dom = Object.entries(T)
+      .filter(([k]) => k !== 'grand' && T[k] > 0)
+      .map(([k,v]) => ({cat:k, pct: v/grand*100}))
+      .sort((a,b)=>b.pct-a.pct)[0];
+    if (dom && dom.pct > 70)
       out.push({ icon:'📊', text:`${cap(dom.cat)} makes up ${dom.pct.toFixed(0)}% of all spending this month`, type:'info' });
   }
 
@@ -1186,7 +1192,7 @@ function renderCurrent() {
 function renderDashboard() {
   const exp = getExpenses(curMonth);
   const T = totals(curMonth);
-  const grand = T.fixed + T.grocery + T.personal;
+  const grand = T.grand;
 
   document.getElementById('d-total').textContent   = fmt(grand);
   document.getElementById('d-count').textContent   = exp.length + ' transactions';
@@ -1197,14 +1203,18 @@ function renderDashboard() {
   document.getElementById('d-personal').textContent = fmt(T.personal);
   document.getElementById('d-personal-c').textContent = exp.filter(e=>e.category==='personal').length + ' items';
 
-  // Pie
+  // Pie — include custom categories as "Other"
   destroyChart('pie');
   if(grand > 0) {
+    const ctotal = customTotal(T);
+    const pieLabels = ['Fixed','Grocery','Personal', ...(ctotal>0?['Other']:[])];
+    const pieData   = [T.fixed,T.grocery,T.personal, ...(ctotal>0?[ctotal]:[])];
+    const pieColors = ['#3b82f6','#22c55e','#a855f7','#f59e0b'];
     charts.pie = new Chart(document.getElementById('pieChart'), {
       type: 'doughnut',
       data: {
-        labels: ['Fixed','Grocery','Personal'],
-        datasets: [{ data:[T.fixed,T.grocery,T.personal], backgroundColor:['#3b82f6','#22c55e','#a855f7'], borderWidth:0, hoverOffset:8 }]
+        labels: pieLabels,
+        datasets: [{ data:pieData, backgroundColor:pieColors.slice(0,pieLabels.length), borderWidth:0, hoverOffset:8 }]
       },
       options: {
         responsive:true,
@@ -1216,16 +1226,19 @@ function renderDashboard() {
     });
   }
 
-  // Category bars
+  // Category bars — include custom categories
+  const ctotal = customTotal(T);
   const cats = [
-    {key:'fixed',  label:'🏠 Fixed',    color:'#3b82f6'},
-    {key:'grocery',label:'🛒 Grocery',  color:'#22c55e'},
-    {key:'personal',label:'🎯 Personal',color:'#a855f7'},
+    {key:'fixed',   label:'🏠 Fixed',    color:'#3b82f6'},
+    {key:'grocery', label:'🛒 Grocery',  color:'#22c55e'},
+    {key:'personal',label:'🎯 Personal', color:'#a855f7'},
+    ...(ctotal>0 ? [{key:'_other', label:'✨ Other', color:'#f59e0b', val:ctotal}] : []),
   ];
   document.getElementById('cat-bars').innerHTML = cats.map(c=>{
-    const pct = grand>0 ? (T[c.key]/grand*100).toFixed(1) : 0;
+    const val = c.val !== undefined ? c.val : T[c.key];
+    const pct = grand>0 ? (val/grand*100).toFixed(1) : 0;
     return `<div class="cat-bar-item">
-      <div class="cat-bar-header"><span>${c.label}</span><span>${fmt(T[c.key])} <span style="color:var(--text2)">${pct}%</span></span></div>
+      <div class="cat-bar-header"><span>${c.label}</span><span>${fmt(val)} <span style="color:var(--text2)">${pct}%</span></span></div>
       <div class="cat-bar-track"><div class="cat-bar-fill" style="width:${pct}%;background:${c.color}"></div></div>
     </div>`;
   }).join('');
@@ -1282,7 +1295,7 @@ function renderExpenses() {
 function renderBudget() {
   const B = getBudget(curMonth);
   const T = totals(curMonth);
-  const grand = T.fixed + T.grocery + T.personal;
+  const grand = T.grand;
   const totalB = B.total || 0;
   const allocated = (B.fixed||0) + (B.grocery||0) + (B.personal||0);
   const unalloc = totalB - allocated;
@@ -1452,7 +1465,7 @@ function renderReports() {
   });
 
   destroyChart('trend');
-  const trendVals = keys.map(k=>{ const T=totals(k); return T.fixed+T.grocery+T.personal; });
+  const trendVals = keys.map(k=>totals(k).grand);
   charts.trend = new Chart(document.getElementById('trendChart'), {
     type:'line',
     data:{
@@ -1471,24 +1484,28 @@ function renderReports() {
 
   destroyChart('allPie');
   const all = {fixed:0,grocery:0,personal:0};
-  keys.forEach(k=>{ const T=totals(k); all.fixed+=T.fixed; all.grocery+=T.grocery; all.personal+=T.personal; });
+  keys.forEach(k=>{ const T=totals(k); Object.entries(T).forEach(([cat,v])=>{ if(cat==='grand') return; all[cat]=(all[cat]||0)+v; }); });
+  const allCustom = Object.entries(all).reduce((s,[k,v])=>!['fixed','grocery','personal'].includes(k)?s+v:s, 0);
+  const allLabels = ['Fixed','Grocery','Personal',...(allCustom>0?['Other']:[])];
+  const allData   = [all.fixed,all.grocery,all.personal,...(allCustom>0?[allCustom]:[])];
   charts.allPie = new Chart(document.getElementById('allTimePie'), {
     type:'doughnut',
-    data:{ labels:['Fixed','Grocery','Personal'], datasets:[{ data:[all.fixed,all.grocery,all.personal], backgroundColor:['#3b82f6','#22c55e','#a855f7'], borderWidth:0 }] },
+    data:{ labels:allLabels, datasets:[{ data:allData, backgroundColor:['#3b82f6','#22c55e','#a855f7','#f59e0b'].slice(0,allLabels.length), borderWidth:0 }] },
     options:{ responsive:true, plugins:{ legend:{ position:'bottom', labels:{color:cv('--text2'), padding:14} } } }
   });
 
   document.getElementById('monthly-summary').innerHTML = `
     <div class="table-wrap"><table>
-      <thead><tr><th>Month</th><th>Fixed</th><th>Grocery</th><th>Personal</th><th>Total</th></tr></thead>
+      <thead><tr><th>Month</th><th>Fixed</th><th>Grocery</th><th>Personal</th><th>Other</th><th>Total</th></tr></thead>
       <tbody>${keys.map(k=>{
-        const T=totals(k), g=T.fixed+T.grocery+T.personal;
+        const T=totals(k), other=customTotal(T);
         return `<tr>
           <td style="white-space:nowrap">${monthLabel(k)}</td>
           <td style="color:#3b82f6">${fmt(T.fixed)}</td>
           <td style="color:#22c55e">${fmt(T.grocery)}</td>
           <td style="color:#a855f7">${fmt(T.personal)}</td>
-          <td><strong>${fmt(g)}</strong></td>
+          <td style="color:#f59e0b">${other>0?fmt(other):'—'}</td>
+          <td><strong>${fmt(T.grand)}</strong></td>
         </tr>`;
       }).join('')}</tbody>
     </table></div>`;
