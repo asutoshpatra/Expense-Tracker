@@ -2,7 +2,7 @@
 // update normally arrives without this — but renaming the cache makes the
 // activate handler bin the old one outright, which is the difference between
 // "should be fine" and "cannot possibly serve you last week's build".
-const CACHE = 'expendiq-v3.0';
+const CACHE = 'expendiq-v3.1';
 
 // CDN assets — version-pinned, never change → cache-first is safe
 const CDN_ASSETS = [

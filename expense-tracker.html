@@ -4437,7 +4437,19 @@ function renderSettingsPage() {
       ${row('☁️','Cloud sync', syncEnabled() ? 'On' + (syncUser?.email ? ' · ' + esc(syncUser.email) : '') : 'Off', syncEnabled() ? 'Turn off' : 'Turn on', 'toggleSync();renderSettingsPage()')}
       ${row('🔧','Firebase config', fbConfig() ? 'Saved on this device' : 'Not set on this device', 'Edit', 'openFbCfgModal()')}
       ${row('⬇️','Export CSV', 'This month, as a spreadsheet file', 'Export', 'exportCSV()')}
-      ${row('🔔','Reminders', 'Bill and payment nudges', 'Open', 'openReminderModal()')}`);
+      ${row('🔔','Reminders', 'Bill and payment nudges', 'Open', 'openReminderModal()')}`) +
+
+    // The licence obliges anyone shipping this to keep the copyright notice,
+    // but a notice inside LICENSE is one nobody opens. Here it is where a
+    // person using the app can actually see it, and where someone forking it
+    // has to decide to delete it rather than simply never encounter it.
+    `<div style="text-align:center;padding:20px 0 6px;color:var(--text2);font-size:11.5px;line-height:1.85">
+       <div><b style="color:var(--text)">ExpendIQ</b> v${esc(APP_VERSION)} · MIT licensed</div>
+       <div>Built by <a href="https://github.com/asutoshpatra" target="_blank" rel="noopener noreferrer"
+            style="color:var(--accent);text-decoration:none;font-weight:600">Asutosh Patra</a></div>
+       <div><a href="https://github.com/asutoshpatra/Expense-Tracker" target="_blank" rel="noopener noreferrer"
+            style="color:var(--text2);text-decoration:underline">github.com/asutoshpatra/Expense-Tracker</a></div>
+     </div>`;
 
   ensureOllamaProbe();
 }
@@ -13855,8 +13867,11 @@ let __appSig = null;
 //  than eval: the text comes off the network, and nothing off the network should
 //  ever be executed, even from your own origin.
 // ══════════════════════════════════════════════════
-const APP_VERSION = '3.0';
+const APP_VERSION = '3.1';
 const CHANGELOG = /* CHANGELOG_JSON */ [
+  { "v": "3.1", "date": "2026-09-22", "notes": [
+      "Settings now credits who built the app and links the source"
+  ]},
   { "v": "3.0", "date": "2026-09-22", "notes": [
       "Offline support actually works — the service worker had never installed on a deployed copy, because one optional file it could not find aborted the whole cache",
       "Old caches are cleared on update instead of piling up, now that the step that does it runs at all",

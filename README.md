@@ -28,6 +28,7 @@ No build step. No framework. No `npm install`. Download one file and open it.
 10. [Customising it](#10-customising-it)
 11. [Troubleshooting](#11-troubleshooting)
 12. [Tech stack](#12-tech-stack)
+13. [Credit](#credit) · [License](#license)
 
 ---
 
@@ -467,6 +468,35 @@ Application.
 
 ---
 
+## Credit
+
+**ExpendIQ was built by [Asutosh Patra](https://github.com/asutoshpatra).**
+
+Fork it, use it, build on it, ship it commercially — the MIT licence allows all of that,
+and you do not need to ask. One condition comes with it, and it is not optional:
+
+> **Keep the credit.** The MIT licence requires the copyright notice and the licence text to
+> be included in all copies or substantial portions of the software. If you ship this, or a
+> meaningful chunk of it, [`LICENSE`](LICENSE) goes with it.
+
+That is the legal minimum. If you are building something on top of this, the decent thing is
+also to say so somewhere a person can see — a README line, an About screen, a footer. Something like:
+
+```
+Based on ExpendIQ by Asutosh Patra — https://github.com/asutoshpatra/Expense-Tracker
+```
+
+The app carries the same credit in **Settings**, at the bottom. Please leave it there. If you
+have rewritten enough that it no longer feels like my work, that is fair — but keep `LICENSE`
+regardless, because that part is the licence talking, not me.
+
+Built something with it? I would genuinely like to see it — open an issue and show me.
+
+---
+
 ## License
 
-MIT. Fork it, use it, make it your own.
+[MIT](LICENSE) © 2026 Asutosh Patra.
+
+Permissive: commercial use, modification, distribution and private use are all fine.
+The one requirement is the notice above.
