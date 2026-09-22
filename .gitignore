@@ -1,8 +1,8 @@
 # ── Personal / secret files ──────────────────────────────
-# firebase-config.js is committed with placeholder values so new users
-# know what to fill in. If you add your real credentials and want to
-# keep them private, uncomment the line below:
-# firebase-config.js
+# If you keep your real Firebase credentials in firebase-config.js
+# and want to gitignore it, uncomment the line below.
+# Then use firebase-config.example.js as the committed template.
+firebase-config.js
 
 # ── OS junk ──────────────────────────────────────────────
 .DS_Store
@@ -20,4 +20,6 @@ desktop.ini
 *.csv
 ~$*
 .claude/
-before-after*
+
+# Statements and other documents dropped in for parsing — never commit these
+*.pdf
