@@ -2,7 +2,7 @@
 // update normally arrives without this — but renaming the cache makes the
 // activate handler bin the old one outright, which is the difference between
 // "should be fine" and "cannot possibly serve you last week's build".
-const CACHE = 'expendiq-v3.1';
+const CACHE = 'expendiq-v3.2';
 
 // CDN assets — version-pinned, never change → cache-first is safe
 const CDN_ASSETS = [
@@ -16,12 +16,15 @@ const APP_FILES = [
   './manifest.json'
 ];
 
-// Optional: firebase-config.js is gitignored, so a Git-based deploy simply
-// does not have it and the app falls back to pasting the config in. It still
-// wants network-first treatment when it IS there, but it must never be part
-// of the atomic install — see below.
+// Optional — may or may not be present depending on where this is deployed.
+// Both want network-first treatment when they ARE there, but neither may be
+// part of the atomic install — see below.
+//   firebase-config.js  gitignored, so absent from any Git-based deploy
+//   index.html          a redirect to the app, so the bare URL works. Present
+//                       in the public repo, not in every deployment.
 const OPTIONAL_FILES = [
-  './firebase-config.js'
+  './firebase-config.js',
+  './index.html'
 ];
 
 // Everything the fetch handler should treat as an app file
