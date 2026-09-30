@@ -1171,6 +1171,11 @@
                             <input type="checkbox" id="il-paysplit-toggle" onchange="onPaySplitToggle('il')">
                             Paid from more than one place
                         </label>
+                        <label style="display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--text2);cursor:pointer;margin-top:6px"
+                               title="Tuition, a flight, a laptop — it still leaves the account, but does not count toward the month's total or your budget">
+                            <input type="checkbox" id="il-offbudget">
+                            Keep out of monthly spending
+                        </label>
                     </div>
                 </div>
                 <div class="split-section" id="il-partsplit-section" style="margin-bottom:10px">
@@ -2263,6 +2268,19 @@
         <div class="form-group">
             <label class="form-label">Date <span style="color:var(--text2);text-transform:none;font-size:11px">(optional)</span></label>
             <input class="form-input" type="date" id="exp-date">
+        </div>
+        <div class="form-group">
+            <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer">
+                <input type="checkbox" id="exp-offbudget" style="margin-top:2px;flex:none">
+                <span>
+                    <span style="font-size:13px;font-weight:600">Keep out of monthly spending</span>
+                    <span style="display:block;font-size:11.5px;color:var(--text2);line-height:1.55;margin-top:2px">
+                        For tuition, a flight, a laptop — real money, but not how the month actually
+                        went. It still leaves the account and still shows in your list; it just
+                        won't count toward your total or your budget.
+                    </span>
+                </span>
+            </label>
         </div>
         <div class="form-group">
             <label class="form-label">Note <span style="color:var(--text2);text-transform:none;font-size:11px">(optional)</span></label>
@@ -3662,7 +3680,14 @@ function hasRecoverable(e) { return expenseParts(e).some(p => p.recoverable); }
 // against a month long closed.
 // When the expense is also split with friends, myShare is your share of what was
 // genuinely spent, apportioned across the spending parts in proportion to size.
+// Tuition, a deposit on a flat, a laptop — real money, but not how the month
+// actually went. Counting them makes the budget meaningless in the month they
+// land and flatters every month either side. They still leave the account and
+// still show in the list and the ledger; they just do not count as spending.
+function isOffBudget(e) { return !!(e && e.offBudget); }
+
 function spendingParts(e) {
+  if (isOffBudget(e)) return [];
   const parts = expenseParts(e).filter(p => !p.recoverable && p.category);
   const gross = parts.reduce((s, p) => s + p.amount, 0);
   if (!parts.length || gross <= 0) return [];
@@ -3671,6 +3696,20 @@ function spendingParts(e) {
   if (mine >= gross - 0.005) return parts;
   const scale = mine / gross;
   return parts.map(p => ({ ...p, amount: p.amount * scale }));
+}
+
+// What one month's off-budget payments came to, per currency. Kept out of the
+// totals but never out of sight — a five-figure fee payment that left no trace
+// on the dashboard would be worse than one that skewed it.
+function offBudgetTotals(key) {
+  const out = {};
+  getExpenses(key).forEach(e => {
+    if (!isOffBudget(e)) return;
+    const cur = e.currency || 'USD';
+    out[cur] = (out[cur] || 0) + (Number(effectiveAmount(e)) || 0);
+  });
+  Object.keys(out).forEach(c => { if (Math.abs(out[c]) < 0.01) delete out[c]; });
+  return out;
 }
 
 // Deposits and the like still waiting to come back, per currency
@@ -4633,9 +4672,20 @@ function renderDashboard() {
   const customCats = customEntries(T);
   const plural = (n, w) => n + ' ' + w + (n !== 1 ? 's' : '');
   const catCount = k => exp.filter(e => spendingParts(e).some(p => p.category === k)).length;
+  // Payments deliberately kept out of the month. Shown under the total rather
+  // than dropped: a tuition bill that left no trace anywhere would be worse
+  // than one that skewed the figure.
+  const offB = offBudgetTotals(curMonth);
+  const offCount = exp.filter(isOffBudget).length;
+  const offLine = Object.keys(offB).length
+    ? `<div style="font-size:11px;color:var(--text2);margin-top:4px;line-height:1.45"
+            title="Kept out of the total and your budget on purpose">+ ${
+        Object.entries(offB).map(([c, v]) => fmtCurrency(v, c)).join(' · ')
+      } kept out</div>`
+    : '';
   const catClick = k => `openDrillSpent('${String(k).replace(/'/g, "\\'")}')`;
   const allCards = [
-    { icon:'💳', bg:'', label:'Total Spent', color:'',               tint:'#f0b429', cur:TC.grand,    sub:plural(exp.length, 'transaction'), click:'openDrillSpent()' },
+    { icon:'💳', bg:'', label:'Total Spent', color:'',               tint:'#f0b429', cur:TC.grand,    sub:plural(exp.length - offCount, 'transaction') + offLine, click:'openDrillSpent()' },
     { icon:'🏠', bg:'', label:'Fixed',       color:'var(--fixed)',   tint:'#5aa9ff', cur:TC.fixed,    sub:plural(catCount('fixed'), 'item'), click:catClick('fixed') },
     { icon:'🛒', bg:'', label:'Grocery',     color:'var(--grocery)', tint:'#2dd4a7', cur:TC.grocery,  sub:plural(catCount('grocery'), 'item'), click:catClick('grocery') },
     { icon:'🎯', bg:'', label:'Personal',    color:'var(--personal)',tint:'#b98bff', cur:TC.personal, sub:plural(catCount('personal'), 'item'), click:catClick('personal') },
@@ -4773,6 +4823,7 @@ function renderExpenses() {
           ${!friendSrc && e.split?.friends?.length ? `<div class="exp-note">👥 Split — your share ${fmtCurrency(Number(e.split.myShare)||0, e.currency||'USD')}</div>` : ''}
           ${e.pending ? `<div class="exp-note" style="color:var(--accent)">⏳ Scheduled — deducts ${fmtDate(e.date)}</div>` : ''}
           ${e.refund ? `<div class="exp-note" style="color:var(--grocery)">↩️ Refund — reduces ${cap(e.category)} for this month</div>` : ''}
+          ${isOffBudget(e) ? `<div class="exp-note" style="color:var(--personal)">🚫 Kept out of monthly spending</div>` : ''}
         </td>
         <td><span class="badge ${badgeCls(e.category)}">${icon(e.category)} ${cap(e.category)}</span></td>
         <td class="hide-mobile" style="color:var(--text2);font-size:13px">${fmtDate(e.date)}</td>
@@ -5085,6 +5136,8 @@ function resetInlineForm() {
   if (ilCustom) { ilCustom.value = ''; ilCustom.style.display = 'none'; }
   document.getElementById('il-date').value    = todayISO();
   document.getElementById('il-note').value    = '';
+  const ilOff = document.getElementById('il-offbudget');
+  if (ilOff) ilOff.checked = false;
   const ilSrc = document.getElementById('il-source');
   if (ilSrc) ilSrc.innerHTML = buildSourceHTML();
   populateCurrencySelect('il-currency', 'USD');
@@ -5121,6 +5174,8 @@ function openInlineEdit(id) {
   setCatSelect('il', e.category);
   document.getElementById('il-date').value    = e.date || '';
   document.getElementById('il-note').value    = e.note || '';
+  const ilOffE = document.getElementById('il-offbudget');
+  if (ilOffE) ilOffE.checked = isOffBudget(e);
   document.getElementById('il-cancel').style.display = '';
   const ilSrc = document.getElementById('il-source');
   if (ilSrc) ilSrc.innerHTML = buildSourceHTML(isMultiPay(e) ? '' : (e.source || ''));
@@ -5138,6 +5193,7 @@ function saveInlineExpense() {
   const amount = parseFloat(document.getElementById('il-amount').value);
   const date   = document.getElementById('il-date').value || '';
   const note   = document.getElementById('il-note').value.trim();
+  const offBudget = !!document.getElementById('il-offbudget')?.checked;
   const partList = readParts('il');
   const cat = partList ? partsCategory(partList) : getCatValue('il');
   if (!partList && (cat === '_custom' || !cat)) { toast('⚠️ Enter a custom category name'); return; }
@@ -5184,6 +5240,7 @@ function saveInlineExpense() {
         if (sources) updated.sources = sources; else delete updated.sources;
         if (parts) updated.parts = carrySettled(old, parts); else delete updated.parts;
         if (!isPending) delete updated.pending;
+        if (offBudget) updated.offBudget = true; else delete updated.offBudget;
         if (fromMonth === targetMonth) DB.months[fromMonth][idx] = updated;
         else { DB.months[fromMonth].splice(idx, 1); DB.months[targetMonth].push(updated); }
         if (!isPending) applyExpenseSources(updated, false);
@@ -5194,6 +5251,7 @@ function saveInlineExpense() {
       const newId = Date.now();
       const rec = { id: newId, name, amount, currency, category: cat, date, note, source, split: splitData,
                     ...(sources ? { sources } : {}), ...(parts ? { parts } : {}),
+                    ...(offBudget ? { offBudget: true } : {}),
                     ...(isPending ? { pending: true } : {}) };
       DB.months[targetMonth].push(rec);
       if (!isPending) applyExpenseSources(rec, false);
@@ -5236,6 +5294,8 @@ function openAddModal() {
   if (expCustom) { expCustom.value = ''; expCustom.style.display = 'none'; }
   document.getElementById('exp-date').value = todayISO();
   document.getElementById('exp-note').value = '';
+  const expOff = document.getElementById('exp-offbudget');
+  if (expOff) expOff.checked = false;
   const expSrc = document.getElementById('exp-source');
   if (expSrc) expSrc.innerHTML = buildSourceHTML();
   populateCurrencySelect('exp-currency', 'USD');
@@ -5263,6 +5323,8 @@ function openEdit(id) {
   setCatSelect('exp', e.category);
   document.getElementById('exp-date').value = e.date || '';
   document.getElementById('exp-note').value = e.note || '';
+  const expOffE = document.getElementById('exp-offbudget');
+  if (expOffE) expOffE.checked = isOffBudget(e);
   const expSrc = document.getElementById('exp-source');
   if (expSrc) expSrc.innerHTML = buildSourceHTML(isMultiPay(e) ? '' : (e.source || ''));
   populateCurrencySelect('exp-currency', e.currency || 'USD');
@@ -5280,6 +5342,7 @@ function saveExpense() {
   const amount = parseFloat(document.getElementById('exp-amount').value);
   const date   = document.getElementById('exp-date').value || '';
   const note   = document.getElementById('exp-note').value.trim();
+  const offBudget = !!document.getElementById('exp-offbudget')?.checked;
   if(!name || isNaN(amount) || amount<=0) { toast('⚠️ Fill in all fields'); return; }
   const partList = readParts('exp');
   const cat = partList ? partsCategory(partList) : getCatValue('exp');
@@ -5330,6 +5393,7 @@ function saveExpense() {
         if (sources) updated.sources = sources; else delete updated.sources;
         if (parts) updated.parts = carrySettled(old, parts); else delete updated.parts;
         if (!isPending) delete updated.pending;
+        if (offBudget) updated.offBudget = true; else delete updated.offBudget;
         if (fromMonth === targetMonth) DB.months[fromMonth][idx] = updated;
         else { DB.months[fromMonth].splice(idx, 1); DB.months[targetMonth].push(updated); }
         if (!isPending) applyExpenseSources(updated, false);
@@ -5340,6 +5404,7 @@ function saveExpense() {
       const newId = Date.now();
       const rec = { id: newId, name, amount, currency, category:cat, date, note, source, split: splitData,
                     ...(sources ? { sources } : {}), ...(parts ? { parts } : {}),
+                    ...(offBudget ? { offBudget: true } : {}),
                     ...(isPending ? { pending: true } : {}) };
       DB.months[targetMonth].push(rec);
       if (!isPending) applyExpenseSources(rec, false);
@@ -13867,8 +13932,12 @@ let __appSig = null;
 //  than eval: the text comes off the network, and nothing off the network should
 //  ever be executed, even from your own origin.
 // ══════════════════════════════════════════════════
-const APP_VERSION = '3.2';
+const APP_VERSION = '3.3';
 const CHANGELOG = /* CHANGELOG_JSON */ [
+  { "v": "3.3", "date": "2026-09-30", "notes": [
+      "Tick “Keep out of monthly spending” on tuition, a flight or a laptop — it still leaves the account, but stops distorting the month and your budget",
+      "The dashboard shows what was kept out beneath the total, so a large payment is never invisible"
+  ]},
   { "v": "3.2", "date": "2026-09-22", "notes": [
       "The short URL opens the app directly instead of the project page"
   ]},
