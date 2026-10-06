@@ -1530,7 +1530,7 @@
     <div class="modal">
         <div class="modal-handle"></div>
         <h2 id="settle-title">✓ Settle Up</h2>
-        <p style="font-size:12px;color:var(--text2);margin-bottom:16px">Pick the account each payment moves through — balances update automatically.</p>
+        <p style="font-size:12px;color:var(--text2);margin-bottom:16px">Each amount starts at the full balance — change it to settle only part, or set it to 0 to skip that currency. Pick the account the payment moves through and balances update automatically.</p>
         <div id="settle-rows"></div>
         <div class="modal-footer">
             <button class="btn btn-ghost" onclick="closeSettleModal()">Cancel</button>
@@ -6382,14 +6382,63 @@ function openSettleUp() {
     });
     if (cur === 'USD') opts += `<option value="cash_usd">💵 Cash USD</option>`;
     if (cur === 'INR') opts += `<option value="cash_inr">💵 Cash INR</option>`;
+    const abs = Math.abs(amt);
     return `<div style="background:var(--surface2);border-radius:12px;padding:14px;margin-bottom:12px">
       <div style="font-size:14px;margin-bottom:10px">${receiving ? '↓' : '↑'} ${dirText}</div>
-      <label class="form-label">${receiving ? 'Received into' : 'Paid from'}</label>
+      <label class="form-label">Amount settling now</label>
+      <div style="display:flex;gap:6px;align-items:center">
+        <input class="form-input" type="number" step="0.01" min="0" id="settle-amt-${i}"
+               value="${abs.toFixed(2)}" inputmode="decimal" style="flex:1"
+               oninput="onSettleAmtInput(${i})">
+        <button type="button" class="btn btn-ghost" style="font-size:12px;padding:8px 12px;white-space:nowrap"
+                onclick="settleFullAmount(${i})">All of it</button>
+      </div>
+      <div id="settle-note-${i}" style="font-size:11.5px;color:var(--text2);line-height:1.5;margin-top:5px"></div>
+      <label class="form-label" style="margin-top:12px">${receiving ? 'Received into' : 'Paid from'}</label>
       <select class="form-input" id="settle-src-${i}">${opts}</select>
     </div>`;
   }).join('');
 
   document.getElementById('settle-modal').classList.add('open');
+  settleRows.forEach((_, i) => onSettleAmtInput(i));
+}
+
+// Part-payments are the normal case, not the exception: someone clears $50 of
+// $200 now and the rest later. The field starts at the whole balance so the
+// common "we're square" case is still one tap, and the note underneath says
+// what will be left so nobody has to work it out.
+function settleFullAmount(i) {
+  const row = settleRows && settleRows[i];
+  if (!row) return;
+  const el = document.getElementById('settle-amt-' + i);
+  if (el) { el.value = Math.abs(row.amt).toFixed(2); onSettleAmtInput(i); }
+}
+
+function onSettleAmtInput(i) {
+  const row = settleRows && settleRows[i];
+  const note = document.getElementById('settle-note-' + i);
+  if (!row || !note) return;
+  const abs = Math.abs(row.amt);
+  const raw = parseFloat(document.getElementById('settle-amt-' + i)?.value);
+  const f = getFriends().find(x => x.id === detailFriendId);
+  const who = f ? esc(f.name) : 'they';
+  if (!(raw > 0)) {
+    note.innerHTML = `<span style="color:var(--text2)">Nothing for ${esc(row.cur)} — leave it at 0 to skip this currency.</span>`;
+    return;
+  }
+  const left = abs - raw;
+  if (Math.abs(left) < 0.005) {
+    note.innerHTML = `<span style="color:var(--grocery)">Clears the ${esc(row.cur)} balance in full.</span>`;
+  } else if (left > 0) {
+    note.innerHTML = `Part payment — <strong>${fmtCurrency(left, row.cur)}</strong> still ` +
+      (row.amt > 0 ? `owed to you` : `owed by you`) + ` afterwards.`;
+  } else {
+    // Overpaying is legitimate (rounding, paying ahead) but it reverses who owes
+    // whom, which is worth saying out loud before it happens.
+    note.innerHTML = `<span style="color:var(--accent)">More than the balance — afterwards ` +
+      (row.amt > 0 ? `you would owe ${who}` : `${who} would owe you`) +
+      ` <strong>${fmtCurrency(-left, row.cur)}</strong>.</span>`;
+  }
 }
 
 function closeSettleModal() {
@@ -6401,29 +6450,57 @@ function saveSettleUp() {
   if (detailFriendId === null || !settleRows) { closeSettleModal(); return; }
   const friendId = detailFriendId;
   const A = getAccounts();
-  // Snapshot row selections now — commit may run after the modal closes
-  const rows = settleRows.map(({ cur, amt }, i) => ({ cur, amt, src: document.getElementById('settle-src-' + i)?.value || '' }));
+  // Snapshot row selections now — commit may run after the modal closes.
+  // `amt` is the signed outstanding balance; `pay` is the signed amount actually
+  // being settled, which may be a part of it.
+  const all = settleRows.map(({ cur, amt }, i) => {
+    const entered = parseFloat(document.getElementById('settle-amt-' + i)?.value);
+    const abs = entered > 0 ? Math.round(entered * 100) / 100 : 0;
+    return { cur, amt, abs, pay: Math.sign(amt) * abs,
+             src: document.getElementById('settle-src-' + i)?.value || '' };
+  });
+  const rows = all.filter(r => r.abs > 0);      // a zero row just means "not this currency"
+  if (!rows.length) { toast('⚠️ Enter an amount to settle'); return; }
+
+  // Overpaying reverses who owes whom. Legitimate, but never silent.
+  const over = rows.filter(r => r.abs - Math.abs(r.amt) > 0.005);
+  if (over.length) {
+    const f = getFriends().find(x => x.id === friendId);
+    const who = f ? f.name : 'them';
+    const lines = over.map(r => {
+      const flip = r.abs - Math.abs(r.amt);
+      return `${r.cur}: ${fmtCurrency(r.abs, r.cur)} against ${fmtCurrency(Math.abs(r.amt), r.cur)} outstanding — ` +
+             (r.amt > 0 ? `you would end up owing ${who} ` : `${who} would end up owing you `) +
+             fmtCurrency(flip, r.cur);
+    }).join('\n');
+    if (!confirm('That is more than the balance.\n\n' + lines + '\n\nRecord it anyway?')) return;
+  }
+
   let cashFollowUp = null;
-  rows.forEach(({ amt, src }) => {
+  rows.forEach(({ pay, src }) => {
     if ((src === 'cash_usd' || src === 'cash_inr') && !cashFollowUp) {
-      cashFollowUp = { cur: src === 'cash_usd' ? 'usd' : 'inr', amount: Math.abs(amt), mode: amt > 0 ? 'income' : 'expense' };
+      cashFollowUp = { cur: src === 'cash_usd' ? 'usd' : 'inr', amount: Math.abs(pay), mode: pay > 0 ? 'income' : 'expense' };
     }
   });
 
   const commit = () => {
-    rows.forEach(({ cur, amt, src }, i) => {
+    rows.forEach(({ cur, amt, abs, pay, src }, i) => {
       let viaLabel = '';
       if (src.startsWith('bank_')) {
         const b = A.banks.find(x => x.id === parseInt(src.slice(5)));
-        if (b) { b.balance += amt; viaLabel = ' via ' + b.name; } // +receive / −pay
+        if (b) { b.balance += pay; viaLabel = ' via ' + b.name; } // +receive / −pay
       } else if (src === 'cash_usd' || src === 'cash_inr') {
         const bucket = src === 'cash_usd' ? A.cashUSD : A.cashINR;
-        bucket._extra = Math.round(((bucket._extra || 0) + amt) * 100) / 100;
+        bucket._extra = Math.round(((bucket._extra || 0) + pay) * 100) / 100;
         viaLabel = ' via cash';
       }
+      // Named for what it was, so the history reads correctly later
+      const partial = abs - Math.abs(amt) < -0.005;
       getSplitsDB().push({
         id: Date.now() + i, date: todayISO(), friendId,
-        amount: -amt, currency: cur, description: 'Settlement' + viaLabel, type: 'settlement', via: src || undefined
+        amount: -pay, currency: cur,
+        description: (partial ? 'Part settlement' : 'Settlement') + viaLabel,
+        type: 'settlement', via: src || undefined
       });
     });
     save(DB);
@@ -6433,7 +6510,10 @@ function saveSettleUp() {
     renderAccountsOverview();
     if (curPage === 'accounts') renderAccounts();
     refreshSourceSelects();
-    toast('Settled up ✓');
+    const left = balMapEntries(computeAllBalances()[friendId] || {});
+    toast(left.length
+      ? 'Recorded ✓ · still ' + left.map(e => fmtCurrency(Math.abs(e.amt), e.cur)).join(' + ') + ' outstanding'
+      : 'Settled up ✓');
   };
 
   if (cashFollowUp) openCashDenomModal(cashFollowUp.cur, cashFollowUp.amount, cashFollowUp.mode, { onApply: commit });
@@ -13932,8 +14012,12 @@ let __appSig = null;
 //  than eval: the text comes off the network, and nothing off the network should
 //  ever be executed, even from your own origin.
 // ══════════════════════════════════════════════════
-const APP_VERSION = '3.3';
+const APP_VERSION = '3.4';
 const CHANGELOG = /* CHANGELOG_JSON */ [
+  { "v": "3.4", "date": "2026-10-06", "notes": [
+      "Settle any amount with a friend, not just the whole balance — pay part now and the rest later, and the app says what will still be owed",
+      "Set a currency to 0 to leave it out when a friend owes you in more than one"
+  ]},
   { "v": "3.3", "date": "2026-09-30", "notes": [
       "Tick “Keep out of monthly spending” on tuition, a flight or a laptop — it still leaves the account, but stops distorting the month and your budget",
       "The dashboard shows what was kept out beneath the total, so a large payment is never invisible"
