@@ -2171,6 +2171,15 @@
             Enter your existing balances so everything lives here. Friends that don't exist yet are created automatically.
         </p>
 
+        <div class="form-group">
+            <label class="form-label">What these figures mean</label>
+            <select class="form-input" id="sw-mode" onchange="onSwModeChange()">
+                <option value="add">Add as new balances — on top of what is already here</option>
+                <option value="set">Set balance to this — reconcile to match Splitwise</option>
+            </select>
+            <div id="sw-mode-hint" style="font-size:11.5px;color:var(--text2);line-height:1.6;margin-top:6px"></div>
+        </div>
+
         <div style="background:var(--surface2);border-radius:10px;padding:12px;margin-bottom:14px">
             <label class="form-label">Quick paste (optional)</label>
             <textarea class="form-input" id="sw-paste" rows="3" placeholder="Paste lines from Splitwise, e.g.&#10;Alex owes you $33.00&#10;You owe Sam ₹1,250" style="resize:vertical;font-size:13px"></textarea>
@@ -2183,10 +2192,11 @@
         <div id="sw-rows" style="display:flex;flex-direction:column;gap:6px;max-height:38vh;overflow-y:auto"></div>
         <button class="btn btn-ghost" style="margin-top:10px;font-size:12.5px" onclick="addSwRow()">+ Add row</button>
         <datalist id="sw-friend-list"></datalist>
+        <div id="sw-preview" style="margin-top:12px"></div>
 
         <div class="modal-footer">
             <button class="btn btn-ghost" onclick="closeSplitwiseImport()">Cancel</button>
-            <button class="btn btn-primary" onclick="saveSplitwiseImport()" style="flex:1">Import balances</button>
+            <button class="btn btn-primary" id="sw-save-btn" onclick="saveSplitwiseImport()" style="flex:1">Import balances</button>
         </div>
     </div>
 </div>
@@ -2383,6 +2393,23 @@
         <div class="modal-footer">
             <button class="btn btn-ghost" onclick="closeWhatsNew()" style="flex:1">Close</button>
             <button class="btn btn-primary" onclick="location.reload()" style="flex:1">Reload now</button>
+        </div>
+    </div>
+</div>
+
+<!-- ═══ Recover data: the rolling snapshots, reachable on purpose ═══ -->
+<div class="modal-overlay" id="recover-modal">
+    <div class="modal">
+        <div class="modal-handle"></div>
+        <h2>🩹 Recover data</h2>
+        <p style="font-size:12px;color:var(--text2);margin:-4px 0 14px;line-height:1.6">
+            The app keeps a copy of everything after each save. If records have gone
+            missing, restore the copy that still has them. Restoring downloads a backup
+            of what is on screen first, so this is never a one-way door.
+        </p>
+        <div id="recover-body" style="max-height:56vh;overflow-y:auto;margin-bottom:8px"></div>
+        <div class="modal-footer">
+            <button class="btn btn-ghost" onclick="closeRecoverModal()" style="flex:1">Close</button>
         </div>
     </div>
 </div>
@@ -4476,7 +4503,12 @@ function renderSettingsPage() {
       ${row('☁️','Cloud sync', syncEnabled() ? 'On' + (syncUser?.email ? ' · ' + esc(syncUser.email) : '') : 'Off', syncEnabled() ? 'Turn off' : 'Turn on', 'toggleSync();renderSettingsPage()')}
       ${row('🔧','Firebase config', fbConfig() ? 'Saved on this device' : 'Not set on this device', 'Edit', 'openFbCfgModal()')}
       ${row('⬇️','Export CSV', 'This month, as a spreadsheet file', 'Export', 'exportCSV()')}
-      ${row('🔔','Reminders', 'Bill and payment nudges', 'Open', 'openReminderModal()')}`) +
+      ${row('🔔','Reminders', 'Bill and payment nudges', 'Open', 'openReminderModal()')}
+      ${row('🩹','Recover data', (() => {
+          const n = safeSnaps().length;
+          return n ? `${n} saved cop${n === 1 ? 'y' : 'ies'} to restore from if records go missing`
+                   : 'No saved copies yet';
+        })(), 'Open', 'openRecoverModal()')}`) +
 
     // The licence obliges anyone shipping this to keep the copyright notice,
     // but a notice inside LICENSE is one nobody opens. Here it is where a
@@ -6129,6 +6161,11 @@ function openSplitwiseImport() {
   document.getElementById('sw-paste').value = '';
   document.getElementById('sw-rows').innerHTML = '';
   for (let i = 0; i < 3; i++) addSwRow();
+  // Default to reconciling once Splitwise balances exist. Importing on top of
+  // them is almost never what is meant, and it silently doubles everything.
+  const mode = document.getElementById('sw-mode');
+  if (mode) mode.value = getSplitsDB().some(r => /Splitwise/i.test(r.description || '')) ? 'set' : 'add';
+  onSwModeChange();
   document.getElementById('sw-import-modal').classList.add('open');
 }
 function closeSplitwiseImport() { document.getElementById('sw-import-modal').classList.remove('open'); }
@@ -6146,7 +6183,10 @@ function addSwRow(name = '', dir = 'owed', cur = '', amt = '') {
     <select class="form-input sw-cur" style="padding:8px 4px;font-size:12px">${buildExpCurrencyOptions(cur || baseCur())}</select>
     <input class="form-input sw-amt" type="number" step="0.01" min="0" placeholder="0.00" value="${amt}" style="padding:8px 10px;font-size:13px" inputmode="decimal">
     <button class="acc-del-btn" onclick="this.parentElement.remove()" title="Remove row">✕</button>`;
+  wrap.addEventListener('input', renderSwPreview);
+  wrap.addEventListener('change', renderSwPreview);
   document.getElementById('sw-rows').appendChild(wrap);
+  renderSwPreview();
   return wrap;
 }
 
@@ -6187,33 +6227,103 @@ function parseSwPaste() {
   }
 }
 
+// Splitwise's "simplify debts" rewrites who owes whom without changing anyone's
+// net position. Importing those figures as fresh opening balances would stack
+// them on top of what is already here and double everything. Reconciling instead
+// compares against the balance this app already holds and writes only the
+// difference, so the history still shows where the change came from.
+function swMode() { return document.getElementById('sw-mode')?.value || 'add'; }
+
+function onSwModeChange() {
+  const set = swMode() === 'set';
+  const hint = document.getElementById('sw-mode-hint');
+  if (hint) hint.innerHTML = set
+    ? 'For when Splitwise no longer agrees with the app \u2014 after someone turns on <strong>simplify debts</strong>, say. Enter what Splitwise shows now and only the difference is recorded.'
+    : 'Use this the first time, when the app holds no balance for these friends yet.';
+  const btn = document.getElementById('sw-save-btn');
+  if (btn) btn.textContent = set ? 'Apply adjustments' : 'Import balances';
+  renderSwPreview();
+}
+
+// Rows as entered, resolved against the friends and balances already here
+function swRows() {
+  const balances = computeAllBalances();
+  const friends = getFriends();
+  return [...document.querySelectorAll('#sw-rows .sw-row')].map(row => {
+    const name = row.querySelector('.sw-name').value.trim();
+    const dir  = row.querySelector('.sw-dir').value;
+    const cur  = row.querySelector('.sw-cur').value;
+    const amt  = parseFloat(row.querySelector('.sw-amt').value) || 0;
+    const f = friends.find(x => x.name.toLowerCase() === name.toLowerCase());
+    const target = dir === 'owed' ? amt : -amt;
+    const now = f ? ((balances[f.id] || {})[cur] || 0) : 0;
+    return { name, dir, cur, amt, f, target, now, delta: target - now, isNew: !f };
+    // A target of zero is meaningful when reconciling: "Splitwise now says we are
+    // square" has to be able to clear a balance that is still sitting here.
+    // Adding a zero balance, by contrast, is just an empty row.
+  }).filter(r => r.name && (r.amt > 0 || (swMode() === 'set' && r.f)));
+}
+
+function renderSwPreview() {
+  const el = document.getElementById('sw-preview');
+  if (!el) return;
+  if (swMode() !== 'set') { el.innerHTML = ''; return; }
+  const rows = swRows();
+  if (!rows.length) { el.innerHTML = ''; return; }
+  const side = v => v > 0 ? 'owes you' : 'you owe';
+  const body = rows.map(r => {
+    if (Math.abs(r.delta) < 0.01) {
+      return `<div style="font-size:12px;color:var(--text2);padding:5px 0">${esc(r.name)} \u2014 already matches, nothing to record</div>`;
+    }
+    const nowTxt = r.isNew ? 'no balance here yet'
+      : `${fmtCurrency(Math.abs(r.now), r.cur)} ${side(r.now)}`;
+    return `<div style="font-size:12px;padding:5px 0;line-height:1.6">
+      <strong>${esc(r.name)}</strong> \u2014 ${nowTxt} \u2192 <strong>${fmtCurrency(Math.abs(r.target), r.cur)} ${side(r.target)}</strong>
+      <span style="color:${r.delta > 0 ? 'var(--grocery)' : 'var(--danger)'};font-weight:700">
+        (${r.delta > 0 ? '+' : '\u2212'}${fmtCurrency(Math.abs(r.delta), r.cur)})</span>
+    </div>`;
+  }).join('');
+  const n = rows.filter(r => Math.abs(r.delta) >= 0.01).length;
+  el.innerHTML = `<div style="background:var(--surface2);border-radius:10px;padding:12px">
+      <div style="font-size:12.5px;font-weight:700;margin-bottom:6px">${n ? `${n} adjustment${n !== 1 ? 's' : ''} will be recorded` : 'Nothing to change'}</div>
+      ${body}
+    </div>`;
+}
+
 function saveSplitwiseImport() {
-  const rows = [...document.querySelectorAll('#sw-rows .sw-row')].map(row => ({
-    name: row.querySelector('.sw-name').value.trim(),
-    dir: row.querySelector('.sw-dir').value,
-    cur: row.querySelector('.sw-cur').value,
-    amt: parseFloat(row.querySelector('.sw-amt').value) || 0
-  })).filter(r => r.name && r.amt > 0);
+  const reconcile = swMode() === 'set';
+  const rows = swRows();
 
   if (!rows.length) { toast('⚠️ Add at least one friend and amount'); return; }
 
   const friends = getFriends();
-  let created = 0, base = Date.now();
+  let created = 0, written = 0, base = Date.now();
   rows.forEach((r, i) => {
-    let f = friends.find(x => x.name.toLowerCase() === r.name.toLowerCase());
+    // Reconciling leaves a row that already agrees alone, rather than writing a
+    // zero record that clutters the history for no reason
+    const move = reconcile ? r.delta : (r.dir === 'owed' ? r.amt : -r.amt);
+    if (reconcile && Math.abs(move) < 0.01) return;
+    let f = r.f;
     if (!f) { f = { id: base + i, name: r.name }; friends.push(f); created++; }
     getSplitsDB().push({
       id: base + 1000 + i, date: todayISO(), friendId: f.id,
-      amount: r.dir === 'owed' ? r.amt : -r.amt,     // + they owe me / − I owe them
-      currency: r.cur, description: 'Splitwise opening balance', type: 'debt'
+      amount: move,                                  // + they owe me / − I owe them
+      currency: r.cur,
+      description: reconcile ? 'Splitwise rebalance' : 'Splitwise opening balance',
+      type: 'debt'
     });
+    written++;
   });
+
+  if (!written) { toast('Everything already matches — nothing recorded'); closeSplitwiseImport(); return; }
 
   save(DB);
   closeSplitwiseImport();
   renderSplits();
   refreshSplitFriendList();
-  toast(`📥 Imported ${rows.length} balance${rows.length !== 1 ? 's' : ''}${created ? ` · ${created} new friend${created !== 1 ? 's' : ''}` : ''} ✓`);
+  toast(reconcile
+    ? `✓ ${written} balance${written !== 1 ? 's' : ''} reconciled to Splitwise`
+    : `📥 Imported ${written} balance${written !== 1 ? 's' : ''}${created ? ` · ${created} new friend${created !== 1 ? 's' : ''}` : ''} ✓`);
 }
 
 let detailFriendId = null;
@@ -14012,8 +14122,18 @@ let __appSig = null;
 //  than eval: the text comes off the network, and nothing off the network should
 //  ever be executed, even from your own origin.
 // ══════════════════════════════════════════════════
-const APP_VERSION = '3.4';
+const APP_VERSION = '3.6';
 const CHANGELOG = /* CHANGELOG_JSON */ [
+  { "v": "3.6", "date": "2026-10-16", "notes": [
+      "Splitwise import can now reconcile instead of adding on top — for when someone turns on simplify debts and the balances no longer match. Enter what Splitwise shows and only the difference is recorded",
+      "It shows what will change before you commit, and running it twice does nothing the second time",
+      "Importing again no longer silently doubles your balances"
+  ]},
+  { "v": "3.5", "date": "2026-10-16", "notes": [
+      "Settings → Recover data: the app has always kept copies of everything after each save, but you could only reach them if it decided something was badly wrong. Now you can open them any time, see what each holds, download one or restore it",
+      "Restoring downloads a backup of the current state first, so it can be undone",
+      "The offline cache no longer touches sync traffic, which was producing console errors and could make a live request fail outright"
+  ]},
   { "v": "3.4", "date": "2026-10-06", "notes": [
       "Settle any amount with a friend, not just the whole balance — pay part now and the rest later, and the app says what will still be owed",
       "Set a currency to 0 to leave it out when a friend owes you in more than one"
@@ -14198,6 +14318,86 @@ function recordSafeSnapshot() {
   } catch (e) { /* quota or serialisation — safety net is best-effort */ }
 }
 
+// ── Recovery panel ──
+// The snapshots have always existed, but the only way to reach them was the
+// integrity bar, which fires only at a 20% loss. Losing a week of entries sits
+// well inside that, so the safety net was there and unreachable. This opens it.
+function openRecoverModal() {
+  renderRecoverBody();
+  document.getElementById('recover-modal').classList.add('open');
+}
+function closeRecoverModal() {
+  document.getElementById('recover-modal').classList.remove('open');
+}
+
+function renderRecoverBody() {
+  const el = document.getElementById('recover-body');
+  if (!el) return;
+  const snaps = safeSnaps();
+  const live = safeCount(DB);
+  const months = Object.entries(DB.months || {})
+    .map(([k, v]) => [k, (v || []).length]).filter(([, n]) => n)
+    .sort((a, b) => b[0].localeCompare(a[0]));
+  const newest = Object.values(DB.months || {}).flat()
+    .map(e => e.date).filter(Boolean).sort().slice(-1)[0];
+  const nLoans = (DB.loans || []).length;
+
+  const head = `
+    <div style="background:var(--surface2);border-radius:12px;padding:13px;margin-bottom:14px">
+      <div style="font-size:12.5px;font-weight:700;margin-bottom:6px">On this device now</div>
+      <div style="font-size:12px;color:var(--text2);line-height:1.75">
+        <strong style="color:var(--text)">${live}</strong> records${nLoans ? ` · ${nLoans} loan${nLoans !== 1 ? 's' : ''}` : ''}<br>
+        Newest entry dated <strong style="color:var(--text)">${newest ? fmtDate(newest) : '—'}</strong><br>
+        Last saved ${DB._ts ? new Date(DB._ts).toLocaleString() : '—'}
+      </div>
+      <div style="font-size:11.5px;color:var(--text2);margin-top:8px;line-height:1.6">
+        ${months.slice(0, 6).map(([m, n]) => `${monthLabel(m)}: ${n}`).join(' · ') || 'No expenses recorded'}
+      </div>
+    </div>`;
+
+  if (!snaps.length) {
+    el.innerHTML = head + `<div style="font-size:12.5px;color:var(--text2);line-height:1.7">
+      No saved copies yet — they build up as you use the app.</div>`;
+    return;
+  }
+
+  // Newest first reads better; keep the real index for restoring
+  const rows = snaps.map((sn, i) => ({ sn, i })).reverse().map(({ sn, i }) => {
+    const diff = sn.n - live;
+    const tag = diff > 0
+      ? `<span style="color:var(--grocery);font-weight:700">${diff} more than now</span>`
+      : diff < 0
+        ? `<span style="color:var(--text2)">${-diff} fewer than now</span>`
+        : `<span style="color:var(--text2)">same as now</span>`;
+    const snNewest = Object.values(sn.data?.months || {}).flat()
+      .map(e => e.date).filter(Boolean).sort().slice(-1)[0];
+    return `<div style="border:1px solid ${diff > 0 ? 'var(--accent)' : 'var(--border)'};border-radius:11px;padding:12px;margin-bottom:9px">
+      <div style="font-size:13px;font-weight:700">${sn.n} records</div>
+      <div style="font-size:11.5px;color:var(--text2);margin:2px 0 4px">${new Date(sn.at).toLocaleString()} · ${tag}</div>
+      <div style="font-size:11.5px;color:var(--text2);margin-bottom:9px">Newest entry ${snNewest ? fmtDate(snNewest) : '—'}</div>
+      <div style="display:flex;gap:7px;flex-wrap:wrap">
+        <button class="btn btn-ghost set-btn" onclick="downloadSnapshot(${i})">⬇ Download</button>
+        <button class="btn ${diff > 0 ? 'btn-primary' : 'btn-ghost'} set-btn" onclick="restoreSafeSnapshot(${i})">Restore this</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  el.innerHTML = head + `<div style="font-size:12.5px;font-weight:700;margin-bottom:8px">Saved copies</div>` + rows;
+}
+
+// Downloadable on its own, so a copy can be inspected without replacing anything
+function downloadSnapshot(idx) {
+  const sn = safeSnaps()[idx];
+  if (!sn) return;
+  const payload = { app: 'ExpendIQ', v: 2, exported: new Date(sn.at).toISOString(), data: sn.data };
+  const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `expendiq-snapshot-${new Date(sn.at).toISOString().slice(0, 10)}-${sn.n}rec.json`;
+  a.click();
+  toast('⬇ Copy downloaded ✓');
+}
+
 function dismissIntegrityWarning() {
   document.getElementById('integrity-bar')?.remove();
 }
@@ -14207,10 +14407,14 @@ function restoreSafeSnapshot(idx) {
   const s = snaps[idx];
   if (!s) return;
   if (!confirm(`Restore the copy from ${new Date(s.at).toLocaleString()} with ${s.n} records?\n\nWhat's on screen now will be replaced.`)) return;
+  // Never replace data without first handing back what is being replaced
+  try { exportBackup(); } catch (e) { /* a failed download must not block recovery */ }
   DB = s.data;
   localStorage.setItem('expiq_v2', JSON.stringify(DB));
   dismissIntegrityWarning();
   renderCurrent(); renderAccountsOverview();
+  if (document.getElementById('recover-modal')?.classList.contains('open')) renderRecoverBody();
+  if (curPage === 'settings') renderSettingsPage();
   toast(`Restored ${s.n} records ✓`);
 }
 

@@ -2,7 +2,7 @@
 // update normally arrives without this — but renaming the cache makes the
 // activate handler bin the old one outright, which is the difference between
 // "should be fine" and "cannot possibly serve you last week's build".
-const CACHE = 'expendiq-v3.4';
+const CACHE = 'expendiq-v3.6';
 
 // CDN assets — version-pinned, never change → cache-first is safe
 const CDN_ASSETS = [
@@ -58,6 +58,23 @@ self.addEventListener('activate', e => {
 
 self.addEventListener('fetch', e => {
   const url = e.request.url;
+
+  // Only ever touch our own GET traffic. Everything below caches, and
+  // cache.put rejects for a POST or a chrome-extension:// scheme — an
+  // unhandled rejection that surfaced in the console. Worse, the catch-all
+  // at the bottom wrapped EVERY request, including Firestore's: its
+  // `.catch(() => cached)` resolves with undefined when nothing is cached,
+  // and responding with undefined turns a live request into a hard network
+  // error. Sync traffic has no business going through a cache at all.
+  if (e.request.method !== 'GET') return;
+  let scheme, sameOrigin;
+  try {
+    const u = new URL(url);
+    scheme = u.protocol;
+    sameOrigin = u.origin === self.location.origin;
+  } catch (err) { return; }
+  if (scheme !== 'http:' && scheme !== 'https:') return;
+  if (!sameOrigin && !CDN_ASSETS.some(a => url.startsWith(a))) return;
 
   // CDN assets → cache-first (they're immutable at this URL)
   if (CDN_ASSETS.some(a => url.startsWith(a))) {
