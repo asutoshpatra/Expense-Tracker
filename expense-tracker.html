@@ -204,6 +204,30 @@
         /* ── Form inputs ── */
         .form-input { width: 100%; background: var(--surface3); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; color: var(--text); font-size: 15px; font-family: inherit; transition: border-color 0.15s, box-shadow 0.15s; }
         .form-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(245,158,11,0.12); }
+        /* Chrome draws the calendar and clock glyphs as dark SVGs, which all but
+           disappear on a dark field — the icon was always there, just unreadable.
+           color-scheme tells the browser which way round this control is, so it
+           picks a legible glyph itself and renders the picker popup to match.
+           Scoped to these inputs rather than the page, so nothing else restyles. */
+        input[type="date"], input[type="time"] { color-scheme: dark; }
+        html[data-theme="light"] input[type="date"],
+        html[data-theme="light"] input[type="time"] { color-scheme: light; }
+        /* The indicator is a small target on a phone; give it room and a hit state. */
+        input[type="date"]::-webkit-calendar-picker-indicator,
+        input[type="time"]::-webkit-calendar-picker-indicator {
+            cursor: pointer; opacity: .75; padding: 4px; margin-right: -2px;
+            border-radius: 5px; transition: opacity .15s, background .15s;
+        }
+        input[type="date"]:hover::-webkit-calendar-picker-indicator,
+        input[type="time"]:hover::-webkit-calendar-picker-indicator,
+        input[type="date"]::-webkit-calendar-picker-indicator:hover,
+        input[type="time"]::-webkit-calendar-picker-indicator:hover {
+            opacity: 1; background: rgba(255,255,255,.14);
+        }
+        html[data-theme="light"] input[type="date"]:hover::-webkit-calendar-picker-indicator,
+        html[data-theme="light"] input[type="time"]:hover::-webkit-calendar-picker-indicator {
+            background: rgba(0,0,0,.09);
+        }
         .form-label { display: block; font-size: 11px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.07em; font-weight: 700; margin-bottom: 6px; }
         .form-group { margin-bottom: 16px; }
         .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -14122,8 +14146,12 @@ let __appSig = null;
 //  than eval: the text comes off the network, and nothing off the network should
 //  ever be executed, even from your own origin.
 // ══════════════════════════════════════════════════
-const APP_VERSION = '3.6';
+const APP_VERSION = '3.7';
 const CHANGELOG = /* CHANGELOG_JSON */ [
+  { "v": "3.7", "date": "2026-10-22", "notes": [
+      "The calendar button on date fields is legible again — it was a dark icon on a dark background, and the date picker itself now opens in dark too",
+      "Bigger tap area on the calendar and clock buttons"
+  ]},
   { "v": "3.6", "date": "2026-10-16", "notes": [
       "Splitwise import can now reconcile instead of adding on top — for when someone turns on simplify debts and the balances no longer match. Enter what Splitwise shows and only the difference is recorded",
       "It shows what will change before you commit, and running it twice does nothing the second time",
