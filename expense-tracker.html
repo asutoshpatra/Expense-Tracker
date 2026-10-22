@@ -10131,7 +10131,7 @@ function accountMeta(key) {
     const c = cd.currency || 'USD';
     const eff = cardEffective(cd, A);
     return { name: '💳 ' + cd.name, cur: c,
-      sub: `Due ${fmtCurrency(cd.due || 0, c)}${eff.limit ? ` · Available ${fmtCurrency(eff.free, c)} of ${fmtCurrency(eff.limit, c)}` : ''}`,
+      sub: `${dueLabel(cd.due, c)}${eff.limit ? ` · Available ${fmtCurrency(eff.free, c)} of ${fmtCurrency(eff.limit, c)}` : ''}`,
       isCard: true };
   }
   return null;
@@ -10358,7 +10358,7 @@ function saveCardEdit() {
   }
 
   c.name = name;
-  c.due = Math.max(0, parseFloat(document.getElementById('ce-due').value) || 0);
+  setCardDueValue(c, parseFloat(document.getElementById('ce-due').value) || 0);
   const dd = parseInt(document.getElementById('ce-dueday').value);
   c.dueDay = (dd >= 1 && dd <= 31) ? dd : null;
   const sd = parseInt(document.getElementById('ce-stmtday').value);
@@ -10413,6 +10413,19 @@ function cardLimitRoot(c, A) {
   const root = (A || getAccounts()).cards.find(x => x.id === c.sharedWith);
   return root || c;
 }
+// Overpay a card and the balance goes past zero into credit: the card owes you.
+// Clamping that away at zero, which every crediting path used to do, silently
+// destroyed real money - pay 589.00 against 588.82 and the 0.18 vanished.
+// Rounded to the cent because 588.82 - 589 lands at -0.18000000000000682.
+function setCardDueValue(card, v) {
+  if (card) card.due = Math.round((Number(v) || 0) * 100) / 100;
+}
+// "Due -0.18" reads as a bug. Name it for what it is.
+function dueLabel(v, cur) {
+  const n = Number(v) || 0;
+  return n < -0.004 ? `Credit ${fmtCurrency(-n, cur)}` : `Due ${fmtCurrency(n, cur)}`;
+}
+
 function cardEffective(c, A) {
   A = A || getAccounts();
   const root = cardLimitRoot(c, A);
@@ -10423,7 +10436,7 @@ function cardEffective(c, A) {
     limit,
     groupDue,
     free: limit ? Math.max(0, limit - groupDue) : 0,
-    utilPct: limit ? Math.min(100, Math.round(groupDue / limit * 100)) : 0,
+    utilPct: limit ? Math.max(0, Math.min(100, Math.round(groupDue / limit * 100))) : 0,
     shared: group.length > 1,
     isRoot: root.id === c.id,
     rootName: root.name,
@@ -10438,7 +10451,7 @@ function renameCard(id, name) {
 
 function setCardDue(id, val) {
   const c = getAccounts().cards.find(x => x.id === id);
-  if (c) { c.due = Math.max(0, parseFloat(val) || 0); save(DB); toast('Due updated ✓'); }
+  if (c) { setCardDueValue(c, parseFloat(val) || 0); save(DB); toast('Due updated ✓'); }
 }
 
 function deleteCard(id) {
@@ -10776,7 +10789,7 @@ function saveReward() {
       : (document.getElementById('rw-source').value.trim() || 'Cashback');
     if (!dest) { toast(`⚠️ No ${cur} account to credit — add one first`); return; }
     const commit = () => {
-      if (dest === 'statement') card.due = Math.max(0, card.due - amount);
+      if (dest === 'statement') setCardDueValue(card, card.due - amount);
       else applySource(dest, amount, true, cur);      // reverse=true credits the account
       const tx = logTx('cashback', `Cashback: ${srcName}${note ? ' — ' + note : ''}`, amount, cur,
         { cardId: fromCard ? card.id : null, source: fromCard ? null : srcName, amount, dest });
@@ -10802,7 +10815,7 @@ function saveReward() {
   const worth = rewardMode === 'redeem' ? pts * ppv : 0;
   card.points = Math.max(0, (card.points || 0) + signed);
   if (ppv) card.pointValue = ppv;
-  if (worth > 0) card.due = Math.max(0, card.due - worth);   // redeemed value lands as statement credit
+  if (worth > 0) setCardDueValue(card, card.due - worth);   // redeemed value lands as statement credit
   const tx = logTx('points', `${rewardMode === 'redeem' ? 'Redeemed' : 'Earned'} ${pts.toLocaleString()} pts: ${card.name}${note ? ' — ' + note : ''}`,
     worth, cur, { cardId: card.id, points: signed, worth });
   tx.date = date;
@@ -12734,7 +12747,7 @@ function saveCCPayment() {
       const bucket = A[cashFollowUp.bucketKey];
       bucket._extra = Math.round(((bucket._extra || 0) - cashFollowUp.total) * 100) / 100;
     }
-    card.due = Math.max(0, card.due - amount);
+    setCardDueValue(card, card.due - amount);
     const feeAmt = cashFollowUp ? cashFollowUp.total - amount : 0;
     logTx('cc_payment', `Paid ${card.name}${feeAmt > 0 ? ' (+cash charge)' : ''}`, amount + feeAmt, payCur, { src, cardId: card.id, amount, fee: feeAmt });
     save(DB);
@@ -14208,8 +14221,13 @@ let __appSig = null;
 //  than eval: the text comes off the network, and nothing off the network should
 //  ever be executed, even from your own origin.
 // ══════════════════════════════════════════════════
-const APP_VERSION = '3.8';
+const APP_VERSION = '3.9';
 const CHANGELOG = /* CHANGELOG_JSON */ [
+  { "v": "3.9", "date": "2026-10-22", "notes": [
+      "Overpay a card and the extra is kept as credit instead of being thrown away — paying 589.00 against 588.82 now leaves 0.18 in credit, and the card says so",
+      "Same for cashback and redeemed points credited to a statement: anything beyond what you owed is no longer lost",
+      "A credit raises your available limit and never shows as negative utilisation"
+  ]},
   { "v": "3.8", "date": "2026-10-22", "notes": [
       "Paying a credit card now only offers accounts in that card's currency, instead of letting you pick a mismatched one and warning afterwards",
       "That warning used to appear as a toast behind the dialog, where the blur made it unreadable — it now shows inside the dialog",
