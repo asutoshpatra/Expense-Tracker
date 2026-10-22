@@ -819,6 +819,16 @@
         .cat-bar-track { background: var(--slab-fall); }
 
         /* ── Signature: credit cards as real cards ── */
+        /* A card is one object: the art on top, its settings below. They used to be
+           two separate rounded boxes with a gap, which read as a panel floating
+           under a card rather than part of it. Square off the join and let the
+           cell stretch, so the action row sits on the same line across a row
+           however much each card has to say above it. */
+        .cc-cell { display: flex; flex-direction: column; height: 100%; max-width: 400px; }
+        .cc-panel { border-top-left-radius: 0; border-top-right-radius: 0; border-top: 0;
+                    margin-top: -14px; padding-top: 24px !important; flex: 1;
+                    display: flex; flex-direction: column; }
+        .cc-panel-actions { margin-top: auto; padding-top: 12px; }
         .cc { position: relative; aspect-ratio: 1.586; max-width: 400px; border-radius: 14px; padding: 17px 19px;
               display: flex; flex-direction: column; overflow: hidden; cursor: pointer;
               background:
@@ -2103,6 +2113,8 @@
                 <option value="custom">Custom range…</option>
             </select>
             <input type="text" class="search" id="atx-search" placeholder="Search…" style="width:150px" oninput="renderAccountTx()">
+            <button class="btn btn-ghost" id="atx-recalc" style="display:none;font-size:12.5px;padding:8px 12px"
+                    onclick="recalcCardFromHistory()" title="Set the card balance to what these transactions add up to">⟳ Rebuild balance</button>
         </div>
         <div id="atx-custom-row" style="display:none;gap:8px;margin-bottom:12px">
             <div class="form-group" style="margin:0;flex:1">
@@ -10051,6 +10063,54 @@ let atxKey = null;
 
 // Every movement that touched one account, signed from that account's view
 // (+ money in / − money out). For cards: − is a charge, + is a payment.
+// A card's balance is stored, not derived, so anything that went wrong when it
+// was written stays wrong — clamping an overpayment to zero destroyed the only
+// record of it. The transactions are still intact, though, so the balance can be
+// rebuilt from them: charges less payments, over all time.
+//
+// Deliberately not automatic. It is only correct when the history is complete,
+// and a card carried over from before you started logging will have an opening
+// balance that no transaction accounts for. So it shows both figures and asks.
+function cardBalanceFromHistory(cardId) {
+  const key = 'card_' + cardId;
+  let net = 0, counted = 0;
+  const cur = (getAccounts().cards.find(c => c.id === cardId) || {}).currency || 'USD';
+  collectAccountTx(key).forEach(r => {
+    if (r.pending) return;                       // not applied to the balance yet
+    if ((r.currency || 'USD') !== cur) return;   // never mix currencies into one balance
+    net += Number(r.amount) || 0;
+    counted++;
+  });
+  // net is money in minus money out; what you still owe is the other way round
+  return { due: Math.round(-net * 100) / 100, counted, currency: cur };
+}
+
+function recalcCardFromHistory() {
+  if (!atxKey || !String(atxKey).startsWith('card_')) return;
+  const id = parseInt(String(atxKey).slice(5));
+  const card = getAccounts().cards.find(c => c.id === id);
+  if (!card) return;
+  const { due, counted, currency } = cardBalanceFromHistory(id);
+  const now = Number(card.due) || 0;
+  if (Math.abs(due - now) < 0.005) {
+    toast('Balance already matches the history \u2713');
+    return;
+  }
+  const show = v => v < -0.004 ? `${fmtCurrency(-v, currency)} in credit` : fmtCurrency(v, currency);
+  if (!confirm(
+      `Rebuild this card's balance from its ${counted} transaction${counted !== 1 ? 's' : ''}?\n\n` +
+      `Showing now:  ${show(now)}\n` +
+      `History says: ${show(due)}\n\n` +
+      `Only do this if everything on the card is logged here. A balance carried ` +
+      `over from before you started tracking would be lost.`)) return;
+  setCardDueValue(card, due);
+  save(DB);
+  renderAccountTx();
+  renderAccounts(); renderAccountsOverview(); renderCCAlerts();
+  if (curPage === 'cards') renderCards();
+  toast(`Balance rebuilt — ${show(due)} ✓`);
+}
+
 function collectAccountTx(key) {
   const rows = [];
   const push = (date, desc, kind, amount, currency, extra = {}) =>
@@ -10187,6 +10247,9 @@ function renderAccountTx() {
   if (q)    rows = rows.filter(r => (r.desc || '').toLowerCase().includes(q));
 
   // Totals per currency, in and out
+  const recalcBtn = document.getElementById('atx-recalc');
+  if (recalcBtn) recalcBtn.style.display = meta.isCard ? '' : 'none';
+
   const inBy = {}, outBy = {};
   rows.forEach(r => {
     if (r.pending) return;   // not yet applied to the balance
@@ -10888,7 +10951,7 @@ function renderCards() {
       const dueChip = (c.dueDay && used > 0)
         ? `<span class="cc-pill" style="background:${dueDays <= 3 ? 'rgba(248,113,113,.18)' : 'rgba(245,158,11,.16)'};color:${dueDays <= 3 ? 'var(--danger)' : 'var(--accent)'}">${dueDays === 0 ? 'Due today' : `Due in ${dueDays}d`}</span>`
         : '';
-      return `<div>
+      return `<div class="cc-cell">
         <div class="cc${eff.shared ? ' cc-stack' : ''}" onmousemove="ccSheen(event,this)" onmouseleave="this.style.removeProperty('--mx')"
              onclick="accountRowClick(event,'card_${c.id}')" title="Click for transaction history">
           ${dueChip}
@@ -10902,8 +10965,8 @@ function renderCards() {
           <div class="cc-cycle">${c.stmtDay ? `Statement ${ordinalDay(c.stmtDay)}${c.dueDay ? ` · pay by ${ordinalDay(c.dueDay)}` : ''}` : 'No billing cycle set'}</div>
           <div style="display:flex;justify-content:space-between;align-items:flex-end">
             <div>
-              <div class="cc-due-lbl">${used > 0 ? 'Balance' : 'No balance'}</div>
-              <div class="cc-due" style="color:${used > 0 ? 'var(--danger)' : 'var(--grocery)'}">${fmtCurrency(used, cur)}</div>
+              <div class="cc-due-lbl">${used > 0.004 ? 'Balance' : used < -0.004 ? 'In credit' : 'No balance'}</div>
+              <div class="cc-due" style="color:${used > 0.004 ? 'var(--danger)' : 'var(--grocery)'}">${fmtCurrency(Math.abs(used), cur)}</div>
             </div>
             <button class="acc-del-btn" style="font-size:13px" onclick="event.stopPropagation();openCardEdit(${c.id})" title="Edit card">✏️</button>
           </div>
@@ -10912,7 +10975,7 @@ function renderCards() {
           : `<div class="cc-foot" style="margin-top:12px"><span>No limit set</span><b>—</b></div>`}
           ${c.points > 0 ? `<div class="cc-foot" style="margin-top:4px"><span>⭐ Rewards</span><b style="color:var(--gold-lit)">${(c.points).toLocaleString()} pts</b></div>` : ''}
         </div>
-        <div class="chart-card" style="padding:14px 16px;margin-top:10px">
+        <div class="chart-card cc-panel" style="padding:14px 16px">
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
           <div>
             <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:4px">Limit</label>
@@ -10934,7 +10997,7 @@ function renderCards() {
             <span style="color:var(--text2)">🎁 Cashback earned <b style="color:var(--grocery);font-family:'JetBrains Mono',monospace">${fmtCurrency(rt.cash, cur)}</b></span>
             <span style="color:var(--text2)">⭐ <b style="color:var(--gold-lit);font-family:'JetBrains Mono',monospace">${(c.points || 0).toLocaleString()}</b> pts${rt.redeemed ? ` · ${rt.redeemed.toLocaleString()} redeemed` : ''}</span>
           </div>` : ''; })()}
-        <div style="display:flex;gap:8px;margin-top:12px">
+        <div class="cc-panel-actions" style="display:flex;gap:8px">
           ${used > 0 ? `<button class="btn btn-ghost" style="flex:1;font-size:13px" onclick="event.stopPropagation();openCCPaymentModal(${c.id})">Pay ${fmtCurrency(used, cur)} bill</button>` : `<div style="flex:1;text-align:center;font-size:12px;color:var(--grocery);font-weight:600;align-self:center">Nothing due</div>`}
           <button class="btn btn-ghost" style="font-size:13px;white-space:nowrap" onclick="event.stopPropagation();openRewardModal(${c.id})" title="Record cashback or reward points">🎁 Rewards</button>
         </div>
@@ -14221,8 +14284,13 @@ let __appSig = null;
 //  than eval: the text comes off the network, and nothing off the network should
 //  ever be executed, even from your own origin.
 // ══════════════════════════════════════════════════
-const APP_VERSION = '3.9';
+const APP_VERSION = '4.0';
 const CHANGELOG = /* CHANGELOG_JSON */ [
+  { "v": "4.0", "date": "2026-10-22", "notes": [
+      "Rebuild a card's balance from its own transactions — open the card's history and tap Rebuild balance. Use it to recover a credit an earlier version discarded",
+      "A card in credit now says so on its tile instead of reading No balance",
+      "Each card and its settings are one block again, with the buttons lined up across a row"
+  ]},
   { "v": "3.9", "date": "2026-10-22", "notes": [
       "Overpay a card and the extra is kept as credit instead of being thrown away — paying 589.00 against 588.82 now leaves 0.18 in credit, and the card says so",
       "Same for cashback and redeemed points credited to a statement: anything beyond what you owed is no longer lost",
