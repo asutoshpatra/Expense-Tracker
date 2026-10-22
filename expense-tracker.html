@@ -209,9 +209,13 @@
            color-scheme tells the browser which way round this control is, so it
            picks a legible glyph itself and renders the picker popup to match.
            Scoped to these inputs rather than the page, so nothing else restyles. */
-        input[type="date"], input[type="time"] { color-scheme: dark; }
-        html[data-theme="light"] input[type="date"],
-        html[data-theme="light"] input[type="time"] { color-scheme: light; }
+        /* Declared on the root, not just the date inputs. A select's dropdown list
+           is drawn by the OS, not by this stylesheet, so without this it renders
+           light grey with pale text against a dark app - unreadable, and nothing
+           a background rule on .form-input can reach. Scrollbars and every other
+           native control follow the theme for the same reason. */
+        html[data-theme="dark"]  { color-scheme: dark; }
+        html[data-theme="light"] { color-scheme: light; }
         /* The indicator is a small target on a phone; give it room and a hit state. */
         input[type="date"]::-webkit-calendar-picker-indicator,
         input[type="time"]::-webkit-calendar-picker-indicator {
@@ -1781,6 +1785,9 @@
         <div class="form-group">
             <label class="form-label">From (bank or cash)</label>
             <select class="form-input" id="ccp-from-bank" onchange="onCCPSourceChange()"></select>
+            <div id="ccp-cur-warn" style="display:none;font-size:11.5px;line-height:1.6;margin-top:6px;
+                 color:var(--danger);background:rgba(255,107,138,.10);border:1px solid rgba(255,107,138,.35);
+                 border-radius:8px;padding:8px 10px"></div>
         </div>
         <div class="form-group">
             <label class="form-label">To (credit card)</label>
@@ -1811,7 +1818,7 @@
         </div>
         <div class="modal-footer">
             <button class="btn btn-ghost" onclick="closeCCPaymentModal()">Cancel</button>
-            <button class="btn btn-primary" onclick="saveCCPayment()" style="flex:1">Pay</button>
+            <button class="btn btn-primary" id="ccp-pay-btn" onclick="saveCCPayment()" style="flex:1">Pay</button>
         </div>
     </div>
 </div>
@@ -12598,6 +12605,8 @@ function onCCPCardChange() {
   const hint = document.getElementById('ccp-due-hint');
   if (!card) { hint.textContent = ''; return; }
   const cur = card.currency || 'USD';
+  fillCCPSources(cur, document.getElementById('ccp-from-bank')?.value);
+  onCCPSourceChange();
   const info = cardStatementInfo(card);
   hint.innerHTML = info.stmtDate
     ? `📄 Statement ${fmtDate(info.stmtDate)} — due <strong>${fmtCurrency(info.statementDue, cur)}</strong>` +
@@ -12608,13 +12617,53 @@ function onCCPCardChange() {
   setCCPMode(info.stmtDate ? 'statement' : 'full');
 }
 
+// A card can only be paid from an account in its own currency: the app holds no
+// rate to convert at, and inventing one would quietly misstate both balances.
+// That rule used to be enforced only on save, by a toast that this modal's own
+// backdrop blurs into an unreadable smear. Build the list from the selected card
+// instead, so the wrong pairing cannot be picked in the first place.
+// "a INR card" reads as a typo. Currency codes are spoken as letters, so the
+// article follows the letter name: an I, an S, a U.
+function aAn(code) { return /^[AEFHILMNORSX]/i.test(code || '') ? 'an' : 'a'; }
+
+function fillCCPSources(cardCur, keep) {
+  const A = getAccounts();
+  const sel = document.getElementById('ccp-from-bank');
+  if (!sel) return 0;
+  let fit = 0;
+  const opt = (value, label, cur) => {
+    const ok = cur === cardCur;
+    if (ok) fit++;
+    return `<option value="${value}"${ok ? '' : ' disabled'}>${label}` +
+           `${ok ? '' : ` — ${cur}, cannot pay ${aAn(cardCur)} ${cardCur} card`}</option>`;
+  };
+  let opts = A.banks.map(b => opt(`bank_${b.id}`, `🏦 ${esc(b.name)} (${bankBalStr(b)})`, b.currency || 'USD')).join('');
+  opts += opt('cash_usd', `💵 Cash USD (${fmtUSD(cashUSDTotal(A))})`, 'USD');
+  opts += opt('cash_inr', `💵 Cash INR (${fmtCurrency(cashINRTotal(A), 'INR')})`, 'INR');
+  sel.innerHTML = opts;
+  // Keep the current choice if it still works, otherwise land on the first that does
+  const stillOk = keep && [...sel.options].some(o => o.value === keep && !o.disabled);
+  if (stillOk) sel.value = keep;
+  else {
+    const first = [...sel.options].find(o => !o.disabled);
+    sel.value = first ? first.value : '';
+  }
+  const warn = document.getElementById('ccp-cur-warn');
+  const btn = document.getElementById('ccp-pay-btn');
+  if (warn) {
+    warn.style.display = fit ? 'none' : 'block';
+    warn.innerHTML = fit ? '' :
+      `No ${cardCur} account or cash to pay this card from. Add one, or move money ` +
+      `into ${cardCur} first — payments are never converted between currencies.`;
+  }
+  if (btn) { btn.disabled = !fit; btn.style.opacity = fit ? '' : '.5'; btn.style.cursor = fit ? '' : 'not-allowed'; }
+  return fit;
+}
+
 function openCCPaymentModal(preselectCardId) {
   const A = getAccounts();
   if (!A.cards.length) { toast('⚠️ Add a credit card first'); return; }
-  let opts = A.banks.map(b => `<option value="bank_${b.id}">🏦 ${esc(b.name)} (${bankBalStr(b)})</option>`).join('');
-  opts += `<option value="cash_usd">💵 Cash USD (${fmtUSD(cashUSDTotal(A))})</option>`;
-  opts += `<option value="cash_inr">💵 Cash INR (${fmtCurrency(cashINRTotal(A), 'INR')})</option>`;
-  document.getElementById('ccp-from-bank').innerHTML = opts;
+
   document.getElementById('ccp-to-card').innerHTML = A.cards.map(c => `<option value="${c.id}">${c.name} — Due: ${fmtCurrency(c.due, c.currency||'USD')}</option>`).join('');
   if (preselectCardId) document.getElementById('ccp-to-card').value = preselectCardId;
   document.getElementById('ccp-cash-fee').value = '';
@@ -12625,8 +12674,19 @@ function openCCPaymentModal(preselectCardId) {
 }
 function closeCCPaymentModal() { document.getElementById('cc-payment-modal').classList.remove('open'); }
 
+// Problems with this form belong inside it. A toast fires behind the modal and
+// the backdrop blur renders it unreadable, so the app looked like it was
+// throwing errors when it was in fact explaining itself.
+function showCCPError(msg) {
+  const warn = document.getElementById('ccp-cur-warn');
+  if (!warn) { toast('\u26a0\ufe0f ' + msg); return; }
+  warn.style.display = 'block';
+  warn.textContent = msg;
+  warn.scrollIntoView({ block: 'nearest' });
+}
+
 function onCCPSourceChange() {
-  const src = document.getElementById('ccp-from-bank').value;
+  const src = document.getElementById('ccp-from-bank').value || '';
   document.getElementById('ccp-cash-fee-row').style.display = src.startsWith('cash_') ? 'block' : 'none';
 }
 
@@ -12645,7 +12705,9 @@ function saveCCPayment() {
     const bank = A.banks.find(b => b.id === parseInt(src.slice(5)));
     if (!bank) { toast('⚠️ Account not found'); return; }
     if ((bank.currency || 'USD') !== payCur) {
-      toast(`⚠️ ${card.name} is ${payCur} but ${bank.name} is ${bank.currency}. Transfer to a ${payCur} account first.`);
+      // Belt and braces; the picker should make this unreachable now
+      showCCPError(`${card.name} is ${payCur} but ${bank.name} is ${bank.currency}. ` +
+                   `Pay it from a ${payCur} account, or move money into ${payCur} first.`);
       return;
     }
     if (bank.balance < amount) {
@@ -12655,7 +12717,7 @@ function saveCCPayment() {
   } else if (src === 'cash_usd' || src === 'cash_inr') {
     const cashCur = src === 'cash_usd' ? 'USD' : 'INR';
     if (cashCur !== payCur) {
-      toast(`⚠️ ${card.name} is ${payCur} — pay it with ${payCur} cash or a ${payCur} bank account.`);
+      showCCPError(`${card.name} is ${payCur} — pay it with ${payCur} cash or a ${payCur} bank account.`);
       return;
     }
     const fee = parseFloat(document.getElementById('ccp-cash-fee').value) || 0;
@@ -14146,8 +14208,13 @@ let __appSig = null;
 //  than eval: the text comes off the network, and nothing off the network should
 //  ever be executed, even from your own origin.
 // ══════════════════════════════════════════════════
-const APP_VERSION = '3.7';
+const APP_VERSION = '3.8';
 const CHANGELOG = /* CHANGELOG_JSON */ [
+  { "v": "3.8", "date": "2026-10-22", "notes": [
+      "Paying a credit card now only offers accounts in that card's currency, instead of letting you pick a mismatched one and warning afterwards",
+      "That warning used to appear as a toast behind the dialog, where the blur made it unreadable — it now shows inside the dialog",
+      "Dropdown lists follow the dark theme instead of rendering light grey with pale text"
+  ]},
   { "v": "3.7", "date": "2026-10-22", "notes": [
       "The calendar button on date fields is legible again — it was a dark icon on a dark background, and the date picker itself now opens in dark too",
       "Bigger tap area on the calendar and clock buttons"
