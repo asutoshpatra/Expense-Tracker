@@ -1471,6 +1471,11 @@
             <div class="splits-sum-label">I owe</div>
             <div class="splits-sum-value" id="splits-i-owe" style="color:var(--danger)">$0.00</div>
         </div>
+        <div class="splits-sum-card" id="splits-unalloc-card" style="display:none;cursor:pointer"
+             onclick="openUnallocated()" title="Shared expenses not yet attributed to anyone">
+            <div class="splits-sum-label">Not yet assigned</div>
+            <div class="splits-sum-value" id="splits-unalloc" style="color:var(--accent)">$0.00</div>
+        </div>
     </div>
 
     <div class="splits-section-hd" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
@@ -2445,6 +2450,23 @@
         <div class="modal-footer">
             <button class="btn btn-ghost" onclick="closeWhatsNew()" style="flex:1">Close</button>
             <button class="btn btn-primary" onclick="location.reload()" style="flex:1">Reload now</button>
+        </div>
+    </div>
+</div>
+
+<!-- ═══ Shared expenses with nobody assigned yet ═══ -->
+<div class="modal-overlay" id="unalloc-modal">
+    <div class="modal">
+        <div class="modal-handle"></div>
+        <h2>🧩 Not yet assigned</h2>
+        <p style="font-size:12px;color:var(--text2);margin:-4px 0 14px;line-height:1.6">
+            Shared bills where part of the amount has not been attributed to anyone.
+            Open one and set each person's share when you know it, and it drops off
+            this list. Your own share already counts as spending either way.
+        </p>
+        <div id="unalloc-body" style="max-height:56vh;overflow-y:auto;margin-bottom:8px"></div>
+        <div class="modal-footer">
+            <button class="btn btn-ghost" onclick="closeUnallocated()" style="flex:1">Close</button>
         </div>
     </div>
 </div>
@@ -3727,7 +3749,12 @@ function effectiveAmount(e) {
   // whether the user paid the bill (scheduled or immediate) or a friend did.
   if (e.split) {
     const hasFriends = Array.isArray(e.split.friends) && e.split.friends.length > 0;
-    if (hasFriends || expenseSources(e).some(s => s.id.startsWith('friend_'))) return Number(e.split.myShare) || 0;
+    const mine = Number(e.split.myShare) || 0;
+    // Naming nobody used to mean the whole bill counted as yours, quietly
+    // ignoring the share you had just typed. That is wrong on its own terms,
+    // and it blocks splitting a bill whose breakdown you do not know yet -
+    // a group where the pairwise figures are decided elsewhere, say.
+    if (hasFriends || mine > 0 || expenseSources(e).some(s => s.id.startsWith('friend_'))) return mine;
   }
   return e.amount;
 }
@@ -3792,6 +3819,36 @@ function offBudgetTotals(key) {
 }
 
 // Deposits and the like still waiting to come back, per currency
+// What a split expense has not attributed to anyone: the bill, less your share,
+// less whatever has been assigned so far. Money you are owed by someone whose
+// name you do not have yet. Derived, never stored, so assigning the rest in the
+// expense is what clears it - nothing can go stale behind your back.
+function unallocatedOf(e) {
+  if (!e || !e.split) return 0;
+  const mine = Number(e.split.myShare) || 0;
+  const given = (e.split.friends || []).reduce((t, f) => t + (Number(f.share) || 0), 0);
+  const rest = (Number(e.amount) || 0) - mine - given;
+  return rest > 0.004 ? Math.round(rest * 100) / 100 : 0;
+}
+
+function unallocatedRows() {
+  const rows = [];
+  Object.entries(DB.months || {}).forEach(([mk, exps]) => (exps || []).forEach(e => {
+    const rest = unallocatedOf(e);
+    if (rest) rows.push({ monthKey: mk, id: e.id, name: e.name,
+                          amount: rest, total: Number(e.amount) || 0,
+                          currency: e.currency || 'USD', date: e.date || mk + '-01' });
+  }));
+  return rows.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+}
+
+function unallocatedTotals() {
+  const out = {};
+  unallocatedRows().forEach(r => { out[r.currency] = (out[r.currency] || 0) + r.amount; });
+  Object.keys(out).forEach(c => { if (Math.abs(out[c]) < 0.01) delete out[c]; });
+  return out;
+}
+
 function recoverableTotals() {
   const out = {};
   Object.values(DB.months || {}).forEach(exps => (exps || []).forEach(e => {
@@ -6113,6 +6170,14 @@ function renderSplits() {
   document.getElementById('splits-owed-to-me').textContent = fmtMap(oweToMeByCur);
   document.getElementById('splits-i-owe').textContent = fmtMap(iOweByCur);
 
+  const un = unallocatedTotals();
+  const unCard = document.getElementById('splits-unalloc-card');
+  if (unCard) {
+    const any = Object.keys(un).length > 0;
+    unCard.style.display = any ? '' : 'none';
+    if (any) document.getElementById('splits-unalloc').textContent = fmtMap(un);
+  }
+
   const list = document.getElementById('splits-friends-list');
   if (!friends.length) {
     list.innerHTML = '<div style="text-align:center;color:var(--text2);padding:30px;font-size:14px">No friends yet.<br>Add one to start splitting expenses.</div>';
@@ -6206,6 +6271,43 @@ function saveDebt() {
 //  SPLITWISE BULK IMPORT
 // ══════════════════════════════════════════════════
 const SYM_TO_CUR = { '$': 'USD', '₹': 'INR', '€': 'EUR', '£': 'GBP', '¥': 'JPY' };
+
+function openUnallocated() {
+  renderUnallocated();
+  document.getElementById('unalloc-modal').classList.add('open');
+}
+function closeUnallocated() {
+  document.getElementById('unalloc-modal').classList.remove('open');
+}
+function renderUnallocated() {
+  const el = document.getElementById('unalloc-body');
+  if (!el) return;
+  const rows = unallocatedRows();
+  if (!rows.length) {
+    el.innerHTML = '<div style="font-size:12.5px;color:var(--text2);padding:10px 0">Everything shared has been attributed. Nothing to do.</div>';
+    return;
+  }
+  el.innerHTML = rows.map(r => `
+    <div style="display:flex;align-items:center;gap:11px;padding:11px 12px;margin-bottom:8px;
+                border:1px solid var(--border);border-radius:10px">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;font-weight:600">${esc(r.name)}</div>
+        <div style="font-size:11.5px;color:var(--text2)">${fmtDate(r.date)} \u00b7 ${fmtCurrency(r.total, r.currency)} total</div>
+      </div>
+      <div style="font-size:13px;font-weight:700;color:var(--accent);font-family:'JetBrains Mono',monospace;white-space:nowrap">
+        ${fmtCurrency(r.amount, r.currency)}</div>
+      <button class="btn btn-ghost set-btn" onclick="jumpToUnallocated('${r.monthKey}',${r.id})">Assign</button>
+    </div>`).join('');
+}
+// Opening the expense is the whole point: shares are edited there, so that is
+// where this has to land rather than inventing a second place to record them.
+function jumpToUnallocated(monthKey, id) {
+  closeUnallocated();
+  curMonth = monthKey;
+  showPage('expenses');
+  renderCurrent();
+  setTimeout(() => openEdit(id), 120);
+}
 
 function openSplitwiseImport() {
   document.getElementById('sw-friend-list').innerHTML =
@@ -14365,8 +14467,13 @@ let __appSig = null;
 //  than eval: the text comes off the network, and nothing off the network should
 //  ever be executed, even from your own origin.
 // ══════════════════════════════════════════════════
-const APP_VERSION = '4.1';
+const APP_VERSION = '4.2';
 const CHANGELOG = /* CHANGELOG_JSON */ [
+  { "v": "4.2", "date": "2026-11-01", "notes": [
+      "Split a bill without naming anyone yet — enter your share, and the rest waits under Not yet assigned on the Splits page until you know who owes what",
+      "Your share counts as your spending from the moment you enter it, even with nobody named. It used to count the whole bill and ignore the share you typed",
+      "Assigning the shares in the expense clears it off the list"
+  ]},
   { "v": "4.1", "date": "2026-11-01", "notes": [
       "A credit card bill can be paid by someone else — a parent, a friend — with the same three choices loans already had: your money you had sent them, their money you owe back, or their money as a gift",
       "Money you had already sent them is not deducted twice: nothing comes off your accounts, because it left when you sent it"
