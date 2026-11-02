@@ -1799,6 +1799,15 @@
                  color:var(--danger);background:rgba(255,107,138,.10);border:1px solid rgba(255,107,138,.35);
                  border-radius:8px;padding:8px 10px"></div>
         </div>
+        <div id="ccp-owe-row" style="display:none;margin-bottom:14px">
+            <label class="form-label">Whose money was it?</label>
+            <select class="form-input" id="ccp-funding" onchange="onCCPFundingChange()">
+                <option value="sent">Mine — I had already sent it to them</option>
+                <option value="owe">Theirs — I owe it back</option>
+                <option value="gift">Theirs — a gift, nothing owed</option>
+            </select>
+            <div id="ccp-funding-note" style="font-size:11.5px;color:var(--text2);line-height:1.65;margin-top:8px"></div>
+        </div>
         <div class="form-group">
             <label class="form-label">To (credit card)</label>
             <select class="form-input" id="ccp-to-card" onchange="onCCPCardChange()"></select>
@@ -12716,6 +12725,14 @@ function fillCCPSources(cardCur, keep) {
   let opts = A.banks.map(b => opt(`bank_${b.id}`, `🏦 ${esc(b.name)} (${bankBalStr(b)})`, b.currency || 'USD')).join('');
   opts += opt('cash_usd', `💵 Cash USD (${fmtUSD(cashUSDTotal(A))})`, 'USD');
   opts += opt('cash_inr', `💵 Cash INR (${fmtCurrency(cashINRTotal(A), 'INR')})`, 'INR');
+  // Someone else paying is never blocked by currency: no account of yours is
+  // touched, so there is nothing to convert. A parent settling an INR card from
+  // their own INR account is the ordinary case this exists for.
+  opts += '<optgroup label="\u{1F465} Paid by someone else">';
+  friendsAZ().forEach(f => { opts += `<option value="friend_${f.id}">\u{1F465} ${esc(f.name)} paid it</option>`; fit++; });
+  opts += '<option value="friend_new">\u2795 Add a person (parent, friend, anyone)\u2026</option>';
+  opts += '</optgroup>';
+  fit++;                       // "add a person" is always a way forward
   sel.innerHTML = opts;
   // Keep the current choice if it still works, otherwise land on the first that does
   const stillOk = keep && [...sel.options].some(o => o.value === keep && !o.disabled);
@@ -12743,6 +12760,10 @@ function openCCPaymentModal(preselectCardId) {
   document.getElementById('ccp-to-card').innerHTML = A.cards.map(c => `<option value="${c.id}">${c.name} — Due: ${fmtCurrency(c.due, c.currency||'USD')}</option>`).join('');
   if (preselectCardId) document.getElementById('ccp-to-card').value = preselectCardId;
   document.getElementById('ccp-cash-fee').value = '';
+  const fund = document.getElementById('ccp-funding');
+  if (fund) fund.value = 'sent';
+  const oweRow = document.getElementById('ccp-owe-row');
+  if (oweRow) oweRow.style.display = 'none';
   document.getElementById('ccp-date').value = todayISO();
   onCCPSourceChange();
   onCCPCardChange();     // fills the amount from the statement due
@@ -12762,8 +12783,46 @@ function showCCPError(msg) {
 }
 
 function onCCPSourceChange() {
-  const src = document.getElementById('ccp-from-bank').value || '';
+  const sel = document.getElementById('ccp-from-bank');
+  let src = sel.value || '';
+  if (src === 'friend_new') { addFriendForCCPay(); return; }
   document.getElementById('ccp-cash-fee-row').style.display = src.startsWith('cash_') ? 'block' : 'none';
+  const byOther = src.startsWith('friend_');
+  const row = document.getElementById('ccp-owe-row');
+  if (row) row.style.display = byOther ? 'block' : 'none';
+  if (byOther) onCCPFundingChange();
+}
+
+// Same three cases as a loan paid by someone else, because it is the same
+// question: whose money actually left, and do you owe it back.
+function onCCPFundingChange() {
+  const box = document.getElementById('ccp-funding-note');
+  const sel = document.getElementById('ccp-from-bank');
+  if (!box || !sel) return;
+  const who = sel.value.startsWith('friend_') ? sourceName(sel.value) : 'they';
+  const mode = document.getElementById('ccp-funding').value;
+  box.innerHTML =
+    mode === 'sent' ? `Nothing comes off your accounts here \u2014 the money left when you sent it. Record that under <strong>Send Money</strong> if you have not already, or this payment will look like it cost you nothing.`
+  : mode === 'owe'  ? `Adds ${esc(who)} to your splits as money you owe. Settle it there when you pay them back.`
+  :                   `Nothing owed and nothing off your accounts. The card balance still goes down.`;
+}
+
+function addFriendForCCPay() {
+  const name = prompt('Who paid the bill?');
+  const sel = document.getElementById('ccp-from-bank');
+  if (!name || !name.trim()) {
+    const first = [...sel.options].find(o => !o.disabled && o.value && o.value !== 'friend_new');
+    sel.value = first ? first.value : '';
+    onCCPSourceChange();
+    return;
+  }
+  const f = { id: Date.now(), name: name.trim(), payerOnly: true };
+  getFriends().push(f);
+  save(DB);
+  const card = getAccounts().cards.find(c => c.id === parseInt(document.getElementById('ccp-to-card').value));
+  fillCCPSources((card && card.currency) || 'USD', 'friend_' + f.id);
+  sel.value = 'friend_' + f.id;
+  onCCPSourceChange();
 }
 
 function saveCCPayment() {
@@ -12775,7 +12834,7 @@ function saveCCPayment() {
   const card = A.cards.find(c => c.id === cardId);
   if (!card) { toast('⚠️ Card not found'); return; }
   const payCur = card.currency || 'USD';
-  let cashFollowUp = null;
+  let cashFollowUp = null, paidBy = null, funding = 'own';
 
   if (src.startsWith('bank_')) {
     const bank = A.banks.find(b => b.id === parseInt(src.slice(5)));
@@ -12803,7 +12862,15 @@ function saveCCPayment() {
       if (!confirm(`Cash on hand (${fmtCurrency(have, payCur)}) is less than ${fmtCurrency(total, payCur)}${fee ? ' (incl. ' + fmtCurrency(fee, payCur) + ' charge)' : ''}. Continue?`)) return;
     }
     cashFollowUp = { cur: src === 'cash_usd' ? 'usd' : 'inr', amount: total, mode: 'expense', bucketKey: src === 'cash_usd' ? 'cashUSD' : 'cashINR', total };
-  } else { toast('⚠️ Pick a payment source'); return; }
+  } else if (src.startsWith('friend_')) {
+    // No account of yours moves. Which of the three it was decides whether a
+    // debt is created, and crucially 'sent' creates none: the money already
+    // left when you transferred it, and charging for it here would count the
+    // same rupees twice.
+    paidBy = getFriends().find(f => f.id === parseInt(src.slice(7))) || null;
+    if (!paidBy) { showCCPError('Could not find who paid it \u2014 pick someone from the list.'); return; }
+    funding = document.getElementById('ccp-funding')?.value || 'sent';
+  } else { showCCPError('Pick where the payment came from.'); return; }
 
   const commitCC = () => {
     if (cashFollowUp) {
@@ -12811,8 +12878,19 @@ function saveCCPayment() {
       bucket._extra = Math.round(((bucket._extra || 0) - cashFollowUp.total) * 100) / 100;
     }
     setCardDueValue(card, card.due - amount);
+    if (paidBy && funding === 'owe') {
+      getSplitsDB().push({
+        id: Date.now(), date: document.getElementById('ccp-date').value || todayISO(),
+        friendId: paidBy.id, amount: -amount, currency: payCur,
+        description: `Paid ${card.name} bill`, type: 'debt'
+      });
+    }
     const feeAmt = cashFollowUp ? cashFollowUp.total - amount : 0;
-    logTx('cc_payment', `Paid ${card.name}${feeAmt > 0 ? ' (+cash charge)' : ''}`, amount + feeAmt, payCur, { src, cardId: card.id, amount, fee: feeAmt });
+    const via = paidBy ? ` \u2014 paid by ${paidBy.name}` : '';
+    logTx('cc_payment', `Paid ${card.name}${via}${feeAmt > 0 ? ' (+cash charge)' : ''}`,
+      amount + feeAmt, payCur,
+      { src, cardId: card.id, amount, fee: feeAmt,
+        ...(paidBy ? { paidBy: paidBy.id, funding } : {}) });
     save(DB);
     closeCCPaymentModal();
     renderAccounts();
@@ -12821,7 +12899,10 @@ function saveCCPayment() {
     if (curPage === 'cards') renderCards();
     refreshSourceSelects();
     const feePaid = cashFollowUp ? cashFollowUp.total - amount : 0;
-    toast(`💳 ${fmtCurrency(amount, payCur)} paid to ${card.name}${feePaid > 0 ? ' + ' + fmtCurrency(feePaid, payCur) + ' cash charge' : ''} ✓`);
+    toast(paidBy
+      ? `💳 ${fmtCurrency(amount, payCur)} paid to ${card.name} by ${paidBy.name}` +
+        `${funding === 'owe' ? ' \u2014 added to your splits' : ''} ✓`
+      : `💳 ${fmtCurrency(amount, payCur)} paid to ${card.name}${feePaid > 0 ? ' + ' + fmtCurrency(feePaid, payCur) + ' cash charge' : ''} ✓`);
   };
   if (cashFollowUp) openCashDenomModal(cashFollowUp.cur, cashFollowUp.amount, cashFollowUp.mode, { onApply: commitCC });
   else commitCC();
@@ -14284,8 +14365,12 @@ let __appSig = null;
 //  than eval: the text comes off the network, and nothing off the network should
 //  ever be executed, even from your own origin.
 // ══════════════════════════════════════════════════
-const APP_VERSION = '4.0';
+const APP_VERSION = '4.1';
 const CHANGELOG = /* CHANGELOG_JSON */ [
+  { "v": "4.1", "date": "2026-11-01", "notes": [
+      "A credit card bill can be paid by someone else — a parent, a friend — with the same three choices loans already had: your money you had sent them, their money you owe back, or their money as a gift",
+      "Money you had already sent them is not deducted twice: nothing comes off your accounts, because it left when you sent it"
+  ]},
   { "v": "4.0", "date": "2026-10-22", "notes": [
       "Rebuild a card's balance from its own transactions — open the card's history and tap Rebuild balance. Use it to recover a credit an earlier version discarded",
       "A card in credit now says so on its tile instead of reading No balance",
