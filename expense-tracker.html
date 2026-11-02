@@ -7179,7 +7179,11 @@ function resetSplitSection(prefix) {
 }
 
 function populateSplitSection(prefix, split) {
-  if (!split || !split.friends?.length) { resetSplitSection(prefix); return; }
+  // A split with a share but nobody named is a real state now - the bill is
+  // shared, you just do not know whose yet. Treating it as "no split" wiped the
+  // share on reopening, and saving then counted the whole bill as yours again.
+  const shared = split && ((split.friends || []).length > 0 || (Number(split.myShare) || 0) > 0);
+  if (!shared) { resetSplitSection(prefix); return; }
   const toggle = document.getElementById(prefix + '-split-toggle');
   const section = document.getElementById(prefix + '-split-section');
   if (toggle) toggle.checked = true;
@@ -14467,8 +14471,11 @@ let __appSig = null;
 //  than eval: the text comes off the network, and nothing off the network should
 //  ever be executed, even from your own origin.
 // ══════════════════════════════════════════════════
-const APP_VERSION = '4.2';
+const APP_VERSION = '4.3';
 const CHANGELOG = /* CHANGELOG_JSON */ [
+  { "v": "4.3", "date": "2026-11-01", "notes": [
+      "Reopening a shared bill with nobody named yet keeps the share you entered, instead of clearing it and counting the whole bill as yours again"
+  ]},
   { "v": "4.2", "date": "2026-11-01", "notes": [
       "Split a bill without naming anyone yet — enter your share, and the rest waits under Not yet assigned on the Splits page until you know who owes what",
       "Your share counts as your spending from the moment you enter it, even with nobody named. It used to count the whole bill and ignore the share you typed",
