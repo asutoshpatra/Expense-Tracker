@@ -2901,10 +2901,21 @@
                 <input class="form-input" type="number" step="0.01" id="ln-sanctioned" placeholder="Total approved">
             </div>
             <div class="form-group" style="flex:1">
-                <label class="form-label">Interest rate % p.a.</label>
+                <label class="form-label">Interest rate % p.a. <span style="color:var(--text2);text-transform:none;font-size:11px">(at the start)</span></label>
                 <input class="form-input" type="number" step="0.01" id="ln-rate" placeholder="e.g. 9.5" oninput="refreshLoanPreview()">
             </div>
         </div>
+        <details class="ln-sect"><summary class="ln-sum">Rate changes</summary><div class="ln-body">
+        <p style="font-size:11.5px;color:var(--text2);line-height:1.6;margin:0 0 10px">
+            For a floating rate. Add the date each new rate took effect and the rate from
+            then on \u2014 interest before that date keeps accruing at the old rate, so your
+            past figures do not move. Leave empty for a fixed-rate loan.
+        </p>
+        <div id="ln-rate-rows"></div>
+        <button type="button" class="btn btn-ghost" style="font-size:12px;padding:6px 12px;margin-bottom:6px"
+                onclick="addRateRow()">+ Add a rate change</button>
+        <div id="ln-rate-summary" class="split-remaining"></div>
+        </div></details>
 
         <div class="form-row">
             <div class="form-group" style="flex:1">
@@ -8190,13 +8201,38 @@ function loanMoratoriumEnd(loan) {
 //     unpaid on the rest day joins the principal. Pay the instalment and there
 //     is nothing left to capitalise, which is exactly why paying on time costs
 //     less than the same money paid late.
+// A floating rate moves. Storing one number and editing it when the lender
+// changes it would rewrite every past month at the new rate, quietly making
+// the whole history wrong - the figure you checked against a statement last
+// year would no longer match it.
+//
+// So the rate is a history: loan.rate is what it started at, and each entry in
+// loan.rateChanges is the rate in force from that date. Past segments keep the
+// rate they accrued under.
+function loanRateChanges(loan) {
+  return ((loan && loan.rateChanges) || [])
+    .filter(r => r && r.date && Number.isFinite(Number(r.rate)))
+    .map(r => ({ date: r.date, rate: Number(r.rate), note: r.note || '' }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+}
+
+// The rate applying on a given day: the latest change on or before it, else the
+// opening rate.
+function loanRateOn(loan, date) {
+  let rate = Number(loan && loan.rate) || 0;
+  loanRateChanges(loan).forEach(c => { if (c.date <= date) rate = c.rate; });
+  return rate;
+}
+
 function loanState(loan, asOf, opts) {
   asOf = asOf || todayISO();
   // The working, recorded only when asked for. Every figure this app shows for a
   // loan comes out of this replay, so being able to read it back line by line is
   // the difference between trusting the number and taking it on faith.
   const trace = opts && opts.trace ? [] : null;
-  const daily = (Number(loan.rate) || 0) / 100 / 365;
+  // Mutable: a 'rate' event further down moves it mid-replay.
+  let rate = Number(loan.rate) || 0;
+  let daily = rate / 100 / 365;
   const tranches = loanDisbursements(loan);
   const start = loanStart(loan);
   const morEnd = loanMoratoriumEnd(loan);
@@ -8211,6 +8247,7 @@ function loanState(loan, asOf, opts) {
     if (p && p.date) events.push({ date: p.date, kind: 'pay', amount: Number(p.amount) || 0 });
   });
   if (morEnd && loan.capitaliseAtMoratoriumEnd !== false) events.push({ date: morEnd, kind: 'capitalise' });
+  loanRateChanges(loan).forEach(c => events.push({ date: c.date, kind: 'rate', rate: c.rate, note: c.note }));
   // Each phase compounds or does not, independently — lenders differ on both,
   // and an education loan that charges simple interest while you study may well
   // compound once repayment starts.
@@ -8235,7 +8272,10 @@ function loanState(loan, asOf, opts) {
   // Same-day ordering: money in, then money out, then interest housekeeping.
   // A payment made on the rest day should clear that month's interest before any
   // of it is allowed to capitalise.
-  const rank = k => k === 'draw' ? 0 : k === 'pay' ? 1 : k === 'capitalise' ? 2 : k === 'rest' ? 3 : 4;
+  // A rate change takes effect from its own date, so it is applied before the
+  // day's other business. The segment that ends on that date has already
+  // accrued at the old rate, which is what makes the past stay put.
+  const rank = k => k === 'rate' ? -1 : k === 'draw' ? 0 : k === 'pay' ? 1 : k === 'capitalise' ? 2 : k === 'rest' ? 3 : 4;
   timeline.sort((a, b) => (a.date || '').localeCompare(b.date || '') || rank(a.kind) - rank(b.kind));
 
   let cursor = start;
@@ -8250,9 +8290,13 @@ function loanState(loan, asOf, opts) {
     }
     const step = trace ? { from: cursor, to: when, days, principal: openingPrincipal,
                            interest: segInterest, kind: ev.kind, amount: ev.amount || 0,
-                           toInterest: 0, toPrincipal: 0, capitalised: 0 } : null;
+                           rate, toInterest: 0, toPrincipal: 0, capitalised: 0 } : null;
     cursor = when;
-    if (ev.kind === 'draw') {
+    if (ev.kind === 'rate') {
+      if (step) { step.rateFrom = rate; step.rateTo = ev.rate; }
+      rate = Number(ev.rate) || 0;
+      daily = rate / 100 / 365;
+    } else if (ev.kind === 'draw') {
       principal += ev.amount; disbursed += ev.amount;
     } else if (ev.kind === 'pay') {
       let left = ev.amount;
@@ -8287,7 +8331,7 @@ function loanState(loan, asOf, opts) {
     undrawn: Math.max(0, (Number(loan.sanctioned) || 0) - disbursed),
     inMoratorium: !!(morEnd && asOf < morEnd), moratoriumEnd: morEnd,
     settled: outstanding <= 0.005 && disbursed > 0,
-    dailyRate: daily, trace
+    dailyRate: daily, rate, openingRate: Number(loan.rate) || 0, trace
   };
 }
 
@@ -8299,13 +8343,13 @@ function loanProjection(loan, st) {
   const s = st || loanState(loan);
   if (s.settled) return { months: 0, payoffDate: null, futureInterest: 0, neverClears: false };
   if (emi <= 0) return { months: null, payoffDate: null, futureInterest: null, neverClears: false };
-  const monthly = (Number(loan.rate) || 0) / 100 / 12;
+  const monthly = (s.rate != null ? s.rate : (Number(loan.rate) || 0)) / 100 / 12;
   let bal = s.outstanding, months = 0, interest = 0;
   // Payments only restart once any moratorium is over
   let cursor = (s.inMoratorium && s.moratoriumEnd) ? s.moratoriumEnd : s.asOf;
   if (s.inMoratorium && s.moratoriumEnd) {
     const d = daysBetweenISO(s.asOf, s.moratoriumEnd);
-    const i = bal * ((Number(loan.rate) || 0) / 100 / 365) * d;
+    const i = bal * ((s.rate != null ? s.rate : (Number(loan.rate) || 0)) / 100 / 365) * d;
     interest += i;
     if (loan.moratoriumCapitalise !== false) bal += i;
   }
@@ -8918,6 +8962,32 @@ let pendingStatementPayments = null;
 // ── Loans: editor ──
 let editLoanId = null;
 
+function addRateRow(date = '', rate = '', note = '') {
+  const rows = document.getElementById('ln-rate-rows');
+  if (!rows) return;
+  const div = document.createElement('div');
+  div.className = 'rate-row';
+  div.style.cssText = 'display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;align-items:center';
+  div.innerHTML =
+    `<input class="form-input rate-date" type="date" style="width:145px" value="${esc(date)}" oninput="refreshLoanPreview()">
+     <input class="form-input rate-pct" type="number" step="0.01" placeholder="% p.a." style="flex:1;min-width:90px"
+            value="${rate !== '' ? Number(rate) : ''}" oninput="refreshLoanPreview()">
+     <input class="form-input rate-note" type="text" placeholder="e.g. repo cut" style="flex:1;min-width:80px" value="${esc(note)}">
+     <button type="button" onclick="this.parentElement.remove();refreshLoanPreview()" title="Remove"
+             style="background:none;border:none;color:var(--text2);font-size:17px;cursor:pointer;padding:0 4px;line-height:1">\u00d7</button>`;
+  rows.appendChild(div);
+  refreshLoanPreview();
+}
+
+function readRateRows() {
+  return [...document.querySelectorAll('#ln-rate-rows .rate-row')].map(r => ({
+    date: r.querySelector('.rate-date').value,
+    rate: parseFloat(r.querySelector('.rate-pct').value),
+    note: r.querySelector('.rate-note').value.trim()
+  })).filter(r => r.date && Number.isFinite(r.rate))
+     .sort((a, b) => a.date.localeCompare(b.date));
+}
+
 function addDrawRow(date = '', amount = '', note = '') {
   const rows = document.getElementById('ln-draw-rows');
   const div = document.createElement('div');
@@ -8958,6 +9028,7 @@ function loanFromForm() {
     sanctionDate: document.getElementById('ln-sanction-date').value || '',
     recurring: readLoanRecurring(),
     rate: parseFloat(document.getElementById('ln-rate').value) || 0,
+    rateChanges: readRateRows(),
     disbursements: readDrawRows(),
     moratoriumMonths: parseInt(document.getElementById('ln-mor-months').value) || 0,
     moratoriumEndDate: document.getElementById('ln-mor-end').value || '',
@@ -9108,6 +9179,11 @@ function openLoanForm(id) {
   document.getElementById('ln-note').value = l ? (l.note || '') : '';
   document.getElementById('ln-status').textContent = '';
   document.getElementById('ln-delete').style.display = l ? '' : 'none';
+  const rateRows = document.getElementById('ln-rate-rows');
+  if (rateRows) {
+    rateRows.innerHTML = '';
+    loanRateChanges(l || {}).forEach(c => addRateRow(c.date, c.rate, c.note));
+  }
   const rows = document.getElementById('ln-draw-rows');
   rows.innerHTML = '';
   const draws = l ? loanDisbursements(l) : [];
@@ -9484,7 +9560,7 @@ function closeLoanWorking() {
 }
 
 const EVENT_LABEL = { draw:'Disbursed', pay:'Payment', capitalise:'Moratorium ends — interest capitalised',
-                      rest:'Monthly rest', end:'Today' };
+                      rest:'Monthly rest', rate:'Rate changed', end:'Today' };
 
 function loanWorkingRows() {
   const l = getLoans().find(x => x.id === workingLoanId);
@@ -9502,9 +9578,12 @@ function renderLoanWorking() {
   const rate = Number(l.rate) || 0;
 
   document.getElementById('lw-intro').innerHTML =
-    `<strong>${esc(l.name)}</strong> — interest accrues daily on the balance outstanding, at ` +
-    `${rate}% a year over a 365-day year, so each day costs <strong>balance × ${rate}% ÷ 365</strong>. ` +
-    `Each line below is the stretch between two things happening.`;
+    `<strong>${esc(l.name)}</strong> — interest accrues daily on the balance outstanding, ` +
+    (loanRateChanges(l).length
+      ? `at whatever rate was in force that day. It started at ${l.rate}% and is now ` +
+        `<strong>${s.rate}%</strong> a year; each line below shows the rate it accrued under. `
+      : `at ${rate}% a year over a 365-day year, so each day costs <strong>balance × ${rate}% ÷ 365</strong>. `) +
+    `Each line is the stretch between two things happening.`;
 
   // A rest that capitalises nothing changed nothing; on a long loan those are
   // most of the lines and they bury the ones that matter.
@@ -9530,6 +9609,7 @@ function renderLoanWorking() {
           (r.excess ? `, ${fmtCurrency(r.excess, cur)} beyond what was owed` : '');
         else if (r.capitalised > 0.005) what = `${EVENT_LABEL[r.kind]} — ${fmtCurrency(r.capitalised, cur)} added to principal`;
         else if (r.kind === 'rest') what = r.skipped ? 'Monthly rest — simple here, nothing added' : 'Monthly rest — nothing unpaid';
+        else if (r.kind === 'rate') what = `Rate changed — ${r.rateFrom}% → <strong>${r.rateTo}%</strong> p.a. from here`;
         return `<tr style="border-bottom:1px solid var(--border)">
           <td style="${cell}">${fmtDate(r.from)}</td>
           <td style="${cell}">${fmtDate(r.to)}</td>
@@ -14471,8 +14551,13 @@ let __appSig = null;
 //  than eval: the text comes off the network, and nothing off the network should
 //  ever be executed, even from your own origin.
 // ══════════════════════════════════════════════════
-const APP_VERSION = '4.3';
+const APP_VERSION = '4.4';
 const CHANGELOG = /* CHANGELOG_JSON */ [
+  { "v": "4.4", "date": "2026-11-01", "notes": [
+      "Floating-rate loans: record the date each new rate took effect, under Rate changes in the loan editor",
+      "Interest before that date keeps accruing at the old rate, so your past figures do not move — which is why editing the rate was never the answer",
+      "The working shows which rate each line accrued under, and names the change where it happens"
+  ]},
   { "v": "4.3", "date": "2026-11-01", "notes": [
       "Reopening a shared bill with nobody named yet keeps the share you entered, instead of clearing it and counting the whole bill as yours again"
   ]},
