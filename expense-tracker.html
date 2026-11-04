@@ -8244,7 +8244,8 @@ function loanState(loan, asOf, opts) {
   const events = [];
   tranches.forEach(d => events.push({ date: d.date, kind: 'draw', amount: d.amount }));
   (loan.payments || []).forEach(p => {
-    if (p && p.date) events.push({ date: p.date, kind: 'pay', amount: Number(p.amount) || 0 });
+    if (p && p.date) events.push({ date: p.date, kind: 'pay', amount: Number(p.amount) || 0,
+                                   payKind: p.kind || 'emi' });
   });
   if (morEnd && loan.capitaliseAtMoratoriumEnd !== false) events.push({ date: morEnd, kind: 'capitalise' });
   loanRateChanges(loan).forEach(c => events.push({ date: c.date, kind: 'rate', rate: c.rate, note: c.note }));
@@ -8299,13 +8300,36 @@ function loanState(loan, asOf, opts) {
     } else if (ev.kind === 'draw') {
       principal += ev.amount; disbursed += ev.amount;
     } else if (ev.kind === 'pay') {
+      // The form has always offered three kinds and the replay ignored all of
+      // them, clearing interest first whatever you picked. A lump sum is not an
+      // instalment: lenders put it against principal, which is the entire point
+      // of making one - it cuts the balance the future interest is charged on.
       let left = ev.amount;
-      const toInt = Math.min(accrued, left);
-      accrued -= toInt; paidInterest += toInt; left -= toInt;
-      const toPrin = Math.min(principal, left);
-      principal -= toPrin; paidPrincipal += toPrin; left -= toPrin;
+      let toInt = 0, toPrin = 0;
+      if (ev.payKind === 'prepay') {
+        toPrin = Math.min(principal, left);
+        principal -= toPrin; paidPrincipal += toPrin; left -= toPrin;
+        // More than the principal: the remainder settles outstanding interest
+        // rather than evaporating.
+        toInt = Math.min(accrued, left);
+        accrued -= toInt; paidInterest += toInt; left -= toInt;
+      } else if (ev.payKind === 'interest') {
+        toInt = Math.min(accrued, left);
+        accrued -= toInt; paidInterest += toInt; left -= toInt;
+        // Paying more than the interest owed: the surplus has to land somewhere,
+        // and principal is the only honest place for it.
+        toPrin = Math.min(principal, left);
+        principal -= toPrin; paidPrincipal += toPrin; left -= toPrin;
+      } else {
+        // A regular instalment clears interest first, then principal.
+        toInt = Math.min(accrued, left);
+        accrued -= toInt; paidInterest += toInt; left -= toInt;
+        toPrin = Math.min(principal, left);
+        principal -= toPrin; paidPrincipal += toPrin; left -= toPrin;
+      }
       if (left > 0.005) overpaid += left;      // paid more than was owed
-      if (step) { step.toInterest = toInt; step.toPrincipal = toPrin; step.excess = left > 0.005 ? left : 0; }
+      if (step) { step.toInterest = toInt; step.toPrincipal = toPrin;
+                  step.payKind = ev.payKind; step.excess = left > 0.005 ? left : 0; }
     } else if (ev.kind === 'capitalise') {
       if (step) step.capitalised = accrued;
       capitalised += accrued; principal += accrued; accrued = 0;
@@ -9604,9 +9628,17 @@ function renderLoanWorking() {
       <tbody>${shown.map(r => {
         let what = EVENT_LABEL[r.kind] || r.kind;
         if (r.kind === 'draw') what = `Disbursed ${fmtCurrency(r.amount, cur)}`;
-        else if (r.kind === 'pay') what = `Paid ${fmtCurrency(r.amount, cur)} — ` +
-          `${fmtCurrency(r.toInterest, cur)} to interest, ${fmtCurrency(r.toPrincipal, cur)} to principal` +
-          (r.excess ? `, ${fmtCurrency(r.excess, cur)} beyond what was owed` : '');
+        else if (r.kind === 'pay') {
+          const label = r.payKind === 'prepay' ? 'Part-prepayment'
+                      : r.payKind === 'interest' ? 'Interest payment' : 'Paid';
+          const order = r.payKind === 'prepay'
+            ? `${fmtCurrency(r.toPrincipal, cur)} off principal` +
+              (r.toInterest > 0.005 ? `, then ${fmtCurrency(r.toInterest, cur)} to interest` : '')
+            : `${fmtCurrency(r.toInterest, cur)} to interest` +
+              (r.toPrincipal > 0.005 ? `, ${fmtCurrency(r.toPrincipal, cur)} to principal` : '');
+          what = `${label} ${fmtCurrency(r.amount, cur)} — ${order}` +
+                 (r.excess ? `, ${fmtCurrency(r.excess, cur)} beyond what was owed` : '');
+        }
         else if (r.capitalised > 0.005) what = `${EVENT_LABEL[r.kind]} — ${fmtCurrency(r.capitalised, cur)} added to principal`;
         else if (r.kind === 'rest') what = r.skipped ? 'Monthly rest — simple here, nothing added' : 'Monthly rest — nothing unpaid';
         else if (r.kind === 'rate') what = `Rate changed — ${r.rateFrom}% → <strong>${r.rateTo}%</strong> p.a. from here`;
@@ -14551,8 +14583,13 @@ let __appSig = null;
 //  than eval: the text comes off the network, and nothing off the network should
 //  ever be executed, even from your own origin.
 // ══════════════════════════════════════════════════
-const APP_VERSION = '4.4';
+const APP_VERSION = '4.5';
 const CHANGELOG = /* CHANGELOG_JSON */ [
+  { "v": "4.5", "date": "2026-11-03", "notes": [
+      "A lump sum now comes off the principal, which is the whole point of making one. It was being applied to interest first, like an ordinary instalment",
+      "Interest-only payments leave the principal alone, and a regular instalment still clears interest first — the three choices on the payment form finally mean something",
+      "The working says which rule applied to each payment"
+  ]},
   { "v": "4.4", "date": "2026-11-01", "notes": [
       "Floating-rate loans: record the date each new rate took effect, under Rate changes in the loan editor",
       "Interest before that date keeps accruing at the old rate, so your past figures do not move — which is why editing the rate was never the answer",
