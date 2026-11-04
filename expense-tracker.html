@@ -9415,6 +9415,29 @@ function saveLoanPay() {
     + (standingSet ? ' · 🔁 now monthly' : ''));
 }
 
+// How a payment is applied was only ever settable when recording it, and the
+// form defaults to Instalment - so a lump sum entered without touching that
+// dropdown was filed as one, and went against interest instead of principal.
+// Changing it here only re-labels the record: nothing is re-debited, because
+// the money already moved when the payment was entered.
+function setLoanPaymentKind(loanId, payId, kind) {
+  const l = getLoans().find(x => x.id === loanId);
+  if (!l) return;
+  const p = (l.payments || []).find(x => x.id === payId);
+  if (!p) return;
+  const before = loanState(l);
+  p.kind = kind;
+  const after = loanState(l);
+  save(DB);
+  renderLoans(); openLoanDetail(loanId); renderCurrent();
+  const moved = after.outstanding - before.outstanding;
+  const cur = l.currency || 'USD';
+  const label = kind === 'prepay' ? 'lump sum' : kind === 'interest' ? 'interest only' : 'instalment';
+  toast(Math.abs(moved) < 0.005
+    ? `Recorded as ${label}`
+    : `Recorded as ${label} — outstanding ${moved < 0 ? 'down' : 'up'} ${fmtCurrency(Math.abs(moved), cur)}`);
+}
+
 function deleteLoanPayment(loanId, payId) {
   const l = getLoans().find(x => x.id === loanId);
   if (!l) return;
@@ -9537,6 +9560,14 @@ function openLoanDetail(id) {
         <div style="font-size:11.5px;color:var(--text2)">balance after</div>
         <div style="font-size:12.5px;font-weight:700">${fmtCurrency(bMin.outstanding, cur)}</div>
       </div>
+      <select onchange="setLoanPaymentKind(${l.id},${p.id},this.value)"
+              title="How this payment is applied. A lump sum comes off the principal; an instalment clears interest first."
+              style="background:var(--surface3);color:var(--text);border:1px solid var(--border2);border-radius:7px;
+                     font-size:11px;padding:4px 6px;max-width:116px">
+        <option value="emi"${(p.kind || 'emi') === 'emi' ? ' selected' : ''}>Instalment</option>
+        <option value="prepay"${p.kind === 'prepay' ? ' selected' : ''}>Lump sum</option>
+        <option value="interest"${p.kind === 'interest' ? ' selected' : ''}>Interest only</option>
+      </select>
       <button onclick="deleteLoanPayment(${l.id},${p.id})" title="Remove this payment"
               style="background:none;border:none;color:var(--text2);font-size:15px;cursor:pointer;padding:0 2px">🗑</button>
     </div>`;
@@ -14583,8 +14614,13 @@ let __appSig = null;
 //  than eval: the text comes off the network, and nothing off the network should
 //  ever be executed, even from your own origin.
 // ══════════════════════════════════════════════════
-const APP_VERSION = '4.5';
+const APP_VERSION = '4.6';
 const CHANGELOG = /* CHANGELOG_JSON */ [
+  { "v": "4.6", "date": "2026-11-03", "notes": [
+      "Every recorded loan payment now shows whether it is an instalment, a lump sum or interest only — and you can change it in place",
+      "Change it and the outstanding updates immediately; nothing is re-debited, because the money already moved when you entered the payment",
+      "The payment form defaults to Instalment, so lump sums entered before this were filed as instalments and went against interest. Retag them to put them back on the principal"
+  ]},
   { "v": "4.5", "date": "2026-11-03", "notes": [
       "A lump sum now comes off the principal, which is the whole point of making one. It was being applied to interest first, like an ordinary instalment",
       "Interest-only payments leave the principal alone, and a regular instalment still clears interest first — the three choices on the payment form finally mean something",
