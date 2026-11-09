@@ -3327,6 +3327,11 @@
                     <input class="form-input" type="number" id="inv-current" placeholder="Defaults to invested" step="0.01" min="0">
                 </div>
             </div>
+            <div class="form-group" style="margin:0" id="inv-source-row">
+                <label class="form-label">Paid from</label>
+                <select class="form-input" id="inv-source" onchange="onInvestSourceChange()"></select>
+                <div id="inv-source-note" style="font-size:11.5px;color:var(--text2);line-height:1.6;margin-top:6px"></div>
+            </div>
             <div class="form-group" style="margin:0">
                 <label class="form-label">Note (optional — e.g. FD rate, maturity, folio #)</label>
                 <input class="form-input" type="text" id="inv-note" placeholder="e.g. 7.1% p.a., matures Mar 2027" autocomplete="off">
@@ -11583,6 +11588,7 @@ function openAddInvestForm() {
   document.getElementById('inv-ulip-fund').value = '';
   document.getElementById('inv-ulip-fundval').value = '';
   ulipFundTouched = false;
+  fillInvestSources('');
   onInvestTypeChange();
   document.getElementById('add-invest-form').style.display = 'block';
   document.getElementById('inv-name').focus();
@@ -11608,8 +11614,42 @@ function openEditInvestForm(id) {
   document.getElementById('inv-ulip-fund').value = r.ulipFund || '';
   document.getElementById('inv-ulip-fundval').value = r.ulipFundValue ?? '';
   ulipFundTouched = true; // keep the stored fund split — don't auto-overwrite it
+  fillInvestSources(r.fundedFrom || '');
+  onInvestSourceChange();                 // locks it: editing never moves money
   onInvestTypeChange();
   document.getElementById('add-invest-form').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+// Withdrawing from an investment has always credited the account the money
+// landed in. Putting money in did the opposite of nothing - it recorded the
+// holding and left every balance untouched, so investing a lakh from your
+// current account left that account still showing the lakh. Cash on hand was
+// overstated by every investment ever made from it.
+//
+// Optional, and off by default, because most holdings are added long after the
+// money left: retroactively debiting those would be worse than the bug.
+function fillInvestSources(selected) {
+  const sel = document.getElementById('inv-source');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">\u2014 Already invested, leave my balances alone \u2014</option>' +
+    buildSourceHTML('', false).replace('<option value="">\u2014 None \u2014</option>', '');
+  if (selected) sel.value = selected;
+  onInvestSourceChange();
+}
+
+function onInvestSourceChange() {
+  const sel = document.getElementById('inv-source');
+  const note = document.getElementById('inv-source-note');
+  if (!sel || !note) return;
+  if (editInvestId) {
+    note.innerHTML = 'Editing does not move money \u2014 the funding is recorded once, when the investment is added.';
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  note.innerHTML = sel.value
+    ? `The invested amount comes off <strong>${esc(sourceName(sel.value))}</strong>, and goes back if you delete this.`
+    : 'Nothing comes off any account. Use this for a holding you already had.';
 }
 
 function saveInvestment() {
@@ -11671,9 +11711,17 @@ function saveInvestment() {
     editInvestId = null;
     toast('💹 Investment updated ✓');
   } else {
-    const rec = { id: Date.now(), type, name, currency, invested, current, note, date: todayISO(), ...extra };
+    const src = document.getElementById('inv-source')?.value || '';
+    const rec = { id: Date.now(), type, name, currency, invested, current, note, date: todayISO(),
+                  ...(src ? { fundedFrom: src } : {}), ...extra };
     getInvestDB().push(rec);
-    toast('💹 Investment added ✓');
+    if (src) {
+      applySource(src, invested, false, currency);       // reverse=false debits it
+      logTx('invest', `Invested in ${name}`, invested, currency,
+        { investId: rec.id, amount: invested, src });
+    }
+    toast('💹 Investment added ✓' +
+      (src ? ` · ${fmtCurrency(invested, currency)} from ${sourceName(src)}` : ''));
   }
   save(DB);
   document.getElementById('add-invest-form').style.display = 'none';
@@ -11695,9 +11743,18 @@ function setInvestCurrent(id, val) {
   save(DB); renderInvestments();
 }
 function deleteInvestment(id) {
-  if (!confirm('Delete this investment?')) return;
+  const r = getInvestDB().find(x => x.id === id);
+  const cur = (r && r.currency) || 'USD';
+  const funded = r && r.fundedFrom;
+  if (!confirm('Delete this investment?' +
+      (funded ? `\n\n${fmtCurrency(r.invested || 0, cur)} goes back to ${sourceName(funded)}.` : ''))) return;
+  if (funded) {
+    applySource(funded, r.invested || 0, true, cur);     // reverse=true credits it back
+    DB.txlog = getTxLog().filter(t => !(t.kind === 'invest' && t.meta && t.meta.investId === id));
+  }
   DB.investments = getInvestDB().filter(x => x.id !== id);
-  save(DB); renderInvestments(); toast('Investment deleted ✓');
+  save(DB); renderInvestments(); renderAccountsOverview(); refreshSourceSelects();
+  toast('Investment deleted ✓' + (funded ? ` · ${fmtCurrency(r.invested || 0, cur)} returned` : ''));
 }
 
 // ── Investment top-up (add more to an existing investment) ──
@@ -14614,8 +14671,13 @@ let __appSig = null;
 //  than eval: the text comes off the network, and nothing off the network should
 //  ever be executed, even from your own origin.
 // ══════════════════════════════════════════════════
-const APP_VERSION = '4.6';
+const APP_VERSION = '4.7';
 const CHANGELOG = /* CHANGELOG_JSON */ [
+  { "v": "4.7", "date": "2026-11-09", "notes": [
+      "Adding an investment can now say which account it was paid from, and the money actually comes off that account",
+      "Defaults to leaving balances alone, for a holding you already had — only pick an account when the money is leaving now",
+      "Deleting an investment funded that way puts the money back"
+  ]},
   { "v": "4.6", "date": "2026-11-03", "notes": [
       "Every recorded loan payment now shows whether it is an instalment, a lump sum or interest only — and you can change it in place",
       "Change it and the outstanding updates immediately; nothing is re-debited, because the money already moved when you entered the payment",
