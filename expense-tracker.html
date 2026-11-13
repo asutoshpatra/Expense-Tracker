@@ -2471,6 +2471,28 @@
     </div>
 </div>
 
+<!-- ═══ Find a ticker ═══ -->
+<div class="modal-overlay modal-stacked" id="ticker-modal">
+    <div class="modal">
+        <div class="modal-handle"></div>
+        <h2>🔍 Find a ticker</h2>
+        <p style="font-size:12px;color:var(--text2);margin:-4px 0 12px;line-height:1.6">
+            Type the company name. Pick the line whose exchange and currency match
+            the shares you actually hold — the same company is listed on several,
+            priced in different currencies.
+        </p>
+        <div class="form-group">
+            <input class="form-input" type="text" id="tk-query" placeholder="e.g. Reliance, Apple, Infosys"
+                   autocomplete="off" spellcheck="false"
+                   oninput="queueTickerSearch()" onkeydown="if(event.key==='Enter'){event.preventDefault();runTickerSearch();}">
+        </div>
+        <div id="tk-results" style="max-height:48vh;overflow-y:auto;margin-bottom:8px"></div>
+        <div class="modal-footer">
+            <button class="btn btn-ghost" onclick="closeTickerSearch()" style="flex:1">Close</button>
+        </div>
+    </div>
+</div>
+
 <!-- ═══ Market data: provider and key ═══ -->
 <div class="modal-overlay" id="quotecfg-modal">
     <div class="modal">
@@ -3372,7 +3394,17 @@
               </div>
               <div class="form-group" style="margin:0">
                   <label class="form-label">Ticker <span style="color:var(--text2);text-transform:none;font-size:11px">(optional — for live prices)</span></label>
-                  <input class="form-input" type="text" id="inv-symbol" placeholder="e.g. AAPL, or RELIANCE.BSE" autocomplete="off" spellcheck="false">
+                  <div style="display:flex;gap:6px;position:relative">
+                    <input class="form-input" type="text" id="inv-symbol" placeholder="Start typing a company or ticker…" style="flex:1"
+                           autocomplete="off" spellcheck="false" role="combobox" aria-expanded="false" aria-autocomplete="list"
+                           oninput="queueSymbolSuggest()" onkeydown="symbolSuggestKey(event)"
+                           onfocus="queueSymbolSuggest()" onblur="hideSymbolSuggest(true)">
+                    <button type="button" class="btn btn-ghost" style="font-size:12.5px;padding:8px 12px;white-space:nowrap"
+                            onclick="openTickerSearch()">🔍 Find</button>
+                    <div id="inv-symbol-sugg" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:30;
+                         margin-top:4px;max-height:244px;overflow-y:auto;background:var(--surface2);
+                         border:1px solid var(--border2);border-radius:10px;box-shadow:0 10px 28px rgba(0,0,0,.45)"></div>
+                  </div>
                   <div id="inv-units-note" style="font-size:11.5px;color:var(--text2);line-height:1.6;margin-top:6px"></div>
               </div>
             </div>
@@ -11658,6 +11690,179 @@ function toggleUnitsFields() {
   syncUnitsValue();
 }
 
+// Looking a ticker up needs no key, which matters: you need the ticker before
+// the price lookup is any use, so making that step depend on the key would be
+// the wrong way round. The same company lists on several exchanges in different
+// currencies, so the exchange and currency are shown rather than guessed at.
+// Suggestions under the field itself. The dialog is still there for a longer
+// look, but having to open one before you can be told what you are looking for
+// is a poor trade when the lookup needs no key and takes a moment.
+let symbolTimer = null, symbolRows = [], symbolActive = -1, symbolSeq = 0;
+
+function queueSymbolSuggest() {
+  clearTimeout(symbolTimer);
+  symbolTimer = setTimeout(runSymbolSuggest, 300);   // let typing settle
+}
+
+function hideSymbolSuggest(delayed) {
+  const go = () => {
+    const box = document.getElementById('inv-symbol-sugg');
+    if (box) box.style.display = 'none';
+    const inp = document.getElementById('inv-symbol');
+    if (inp) inp.setAttribute('aria-expanded', 'false');
+    symbolActive = -1;
+  };
+  // A blur fires before the click that caused it, so let the click land first
+  if (delayed) setTimeout(go, 160); else go();
+}
+
+async function runSymbolSuggest() {
+  const inp = document.getElementById('inv-symbol');
+  const box = document.getElementById('inv-symbol-sugg');
+  if (!inp || !box) return;
+  const q = inp.value.trim();
+  if (q.length < 2) { hideSymbolSuggest(); return; }
+  const seq = ++symbolSeq;
+  try {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), 9000);
+    const res = await fetch('https://api.twelvedata.com/symbol_search?outputsize=12&symbol=' +
+      encodeURIComponent(q), { signal: ac.signal, cache: 'no-store' });
+    clearTimeout(t);
+    const j = await res.json();
+    // A slower earlier request must not overwrite a newer one's results
+    if (seq !== symbolSeq) return;
+    symbolRows = ((j && j.data) || []).map(r => ({
+      sym: r.symbol || '', exch: r.exchange || '', cur: r.currency || '',
+      name: r.instrument_name || r.symbol || '', country: r.country || ''
+    })).filter(r => r.sym);
+    renderSymbolSuggest();
+  } catch (e) {
+    if (seq === symbolSeq) hideSymbolSuggest();
+  }
+}
+
+function renderSymbolSuggest() {
+  const box = document.getElementById('inv-symbol-sugg');
+  const inp = document.getElementById('inv-symbol');
+  if (!box || !inp) return;
+  if (!symbolRows.length) { hideSymbolSuggest(); return; }
+  symbolActive = -1;
+  box.innerHTML = symbolRows.map((r, i) => `
+    <div class="sym-opt" data-i="${i}" onmousedown="event.preventDefault()" onclick="chooseSymbolSuggest(${i})"
+         style="display:flex;align-items:center;gap:10px;padding:9px 11px;cursor:pointer;
+                border-bottom:1px solid var(--border)">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(r.name)}</div>
+        <div style="font-size:11px;color:var(--text2)">${esc(r.exch)}${r.country ? ' \u00b7 ' + esc(r.country) : ''} \u00b7 ${esc(r.cur)}</div>
+      </div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;color:var(--fixed)">${esc(r.sym)}</div>
+    </div>`).join('');
+  box.style.display = 'block';
+  inp.setAttribute('aria-expanded', 'true');
+}
+
+function highlightSymbolSuggest() {
+  document.querySelectorAll('#inv-symbol-sugg .sym-opt').forEach((el, i) => {
+    el.style.background = i === symbolActive ? 'rgba(167,139,250,.16)' : '';
+    if (i === symbolActive) el.scrollIntoView({ block: 'nearest' });
+  });
+}
+
+// Arrows and Enter, so it can be driven without reaching for the mouse
+function symbolSuggestKey(e) {
+  const box = document.getElementById('inv-symbol-sugg');
+  const open = box && box.style.display !== 'none' && symbolRows.length;
+  if (e.key === 'Escape') { hideSymbolSuggest(); return; }
+  if (!open) return;
+  if (e.key === 'ArrowDown') { e.preventDefault(); symbolActive = (symbolActive + 1) % symbolRows.length; highlightSymbolSuggest(); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); symbolActive = (symbolActive - 1 + symbolRows.length) % symbolRows.length; highlightSymbolSuggest(); }
+  else if (e.key === 'Enter' && symbolActive >= 0) { e.preventDefault(); chooseSymbolSuggest(symbolActive); }
+}
+
+function chooseSymbolSuggest(i) {
+  const r = symbolRows[i];
+  if (!r) return;
+  hideSymbolSuggest();
+  pickTicker(r);
+}
+
+let tickerTimer = null;
+function openTickerSearch() {
+  document.getElementById('tk-query').value = document.getElementById('inv-name')?.value.trim() || '';
+  document.getElementById('tk-results').innerHTML = '';
+  document.getElementById('ticker-modal').classList.add('open');
+  setTimeout(() => document.getElementById('tk-query').focus(), 80);
+  if (document.getElementById('tk-query').value) runTickerSearch();
+}
+function closeTickerSearch() { document.getElementById('ticker-modal').classList.remove('open'); }
+
+function queueTickerSearch() {
+  clearTimeout(tickerTimer);
+  tickerTimer = setTimeout(runTickerSearch, 350);   // let typing settle
+}
+
+async function runTickerSearch() {
+  const q = document.getElementById('tk-query').value.trim();
+  const box = document.getElementById('tk-results');
+  if (!box) return;
+  if (q.length < 2) { box.innerHTML = ''; return; }
+  box.innerHTML = '<div style="font-size:12.5px;color:var(--text2);padding:10px 0">Searching\u2026</div>';
+  try {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), 10000);
+    const res = await fetch('https://api.twelvedata.com/symbol_search?outputsize=20&symbol=' +
+      encodeURIComponent(q), { signal: ac.signal, cache: 'no-store' });
+    clearTimeout(t);
+    const j = await res.json();
+    const rows = (j && j.data) || [];
+    if (!rows.length) {
+      box.innerHTML = `<div style="font-size:12.5px;color:var(--text2);padding:10px 0">Nothing found for \u201c${esc(q)}\u201d. Try the company's full name.</div>`;
+      return;
+    }
+    box.innerHTML = rows.map(r => {
+      const sym = r.symbol || '';
+      const exch = r.exchange || '';
+      const cur = r.currency || '';
+      const payload = esc(JSON.stringify({ sym, exch, cur })).replace(/'/g, '&#39;');
+      return `<div onclick='pickTicker(${payload})' style="display:flex;align-items:center;gap:10px;padding:10px 12px;
+                   margin-bottom:6px;border:1px solid var(--border);border-radius:9px;cursor:pointer">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13px;font-weight:600">${esc(r.instrument_name || sym)}</div>
+          <div style="font-size:11.5px;color:var(--text2)">${esc(exch)}${r.country ? ' \u00b7 ' + esc(r.country) : ''} \u00b7 ${esc(cur)}</div>
+        </div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:12.5px;font-weight:700;color:var(--fixed)">${esc(sym)}</div>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    box.innerHTML = `<div style="font-size:12.5px;color:var(--danger);padding:10px 0">${
+      e.name === 'AbortError' ? 'Search timed out.' : 'Could not reach the symbol list.'}</div>`;
+  }
+}
+
+// Each provider wants the exchange spelled its own way.
+function tickerFor(sym, exch) {
+  if (!exch) return sym;
+  return quoteProvider() === 'alphavantage'
+    ? (/^(NSE|BSE)$/i.test(exch) ? `${sym}.${exch.toUpperCase()}` : sym)
+    : `${sym}:${exch}`;
+}
+
+function pickTicker(pick) {
+  const symEl = document.getElementById('inv-symbol');
+  if (symEl) symEl.value = tickerFor(pick.sym, pick.exch);
+  // The currency comes with the listing, and getting it wrong is the easiest
+  // way to end up adding dollars to rupees.
+  const curEl = document.getElementById('inv-currency');
+  if (curEl && pick.cur && [...curEl.options].some(o => o.value === pick.cur)) {
+    curEl.value = pick.cur;
+    if (typeof syncUlipSplit === 'function') syncUlipSplit();
+  }
+  syncUnitsValue();
+  if (document.getElementById('ticker-modal')?.classList.contains('open')) closeTickerSearch();
+  toast(`Ticker set to ${tickerFor(pick.sym, pick.exch)}`);
+}
+
 function openQuoteCfgModal() {
   const sel = document.getElementById('qc-provider');
   sel.innerHTML = Object.entries(QUOTE_PROVIDERS)
@@ -14932,8 +15137,18 @@ let __appSig = null;
 //  than eval: the text comes off the network, and nothing off the network should
 //  ever be executed, even from your own origin.
 // ══════════════════════════════════════════════════
-const APP_VERSION = '4.8';
+const APP_VERSION = '5.0';
 const CHANGELOG = /* CHANGELOG_JSON */ [
+  { "v": "5.0", "date": "2026-11-13", "notes": [
+      "Start typing a company in the ticker field and it suggests matches — no need to open anything or look it up elsewhere",
+      "Each suggestion shows the exchange and currency, since the same company lists on several and they are not the same shares",
+      "Arrow keys and Enter work; picking one sets the ticker in your provider's format and the currency to match"
+  ]},
+  { "v": "4.9", "date": "2026-11-13", "notes": [
+      "Find a ticker by company name instead of looking it up elsewhere — the Find button beside the ticker field",
+      "Results show the exchange and currency, because the same company lists on several and they are not the same shares",
+      "Picking one fills the ticker in the format your provider wants and sets the currency to match"
+  ]},
   { "v": "4.8", "date": "2026-11-13", "notes": [
       "Hold shares as units and a price instead of one typed figure — the current value is worked out for you, and stays right as the price moves",
       "Dollar and rupee holdings are listed separately, because a single total across two currencies means nothing",
