@@ -2471,6 +2471,35 @@
     </div>
 </div>
 
+<!-- ═══ Market data: provider and key ═══ -->
+<div class="modal-overlay" id="quotecfg-modal">
+    <div class="modal">
+        <div class="modal-handle"></div>
+        <h2>📈 Market data</h2>
+        <p style="font-size:12px;color:var(--text2);margin:-4px 0 14px;line-height:1.65">
+            Live share prices need a key of your own. Every free source that does not
+            need one refuses requests from a browser, so there is no way around it.
+            The key is kept on this device only and never leaves it except to the
+            provider you pick.
+        </p>
+        <div class="form-group">
+            <label class="form-label">Provider</label>
+            <select class="form-input" id="qc-provider" onchange="onQuoteProviderChange()"></select>
+            <div id="qc-hint" style="font-size:11.5px;color:var(--text2);line-height:1.6;margin-top:6px"></div>
+        </div>
+        <div class="form-group">
+            <label class="form-label">API key</label>
+            <input class="form-input" type="text" id="qc-key" placeholder="paste your key" autocomplete="off" spellcheck="false">
+        </div>
+        <div id="qc-status" style="font-size:11.5px;line-height:1.6;margin-bottom:10px;color:var(--text2)"></div>
+        <div class="modal-footer">
+            <button class="btn btn-ghost" onclick="closeQuoteCfgModal()">Cancel</button>
+            <button class="btn btn-ghost" onclick="testQuoteKey()">Test</button>
+            <button class="btn btn-primary" onclick="saveQuoteCfg()" style="flex:1">Save</button>
+        </div>
+    </div>
+</div>
+
 <!-- ═══ Recover data: the rolling snapshots, reachable on purpose ═══ -->
 <div class="modal-overlay" id="recover-modal">
     <div class="modal">
@@ -3246,6 +3275,9 @@
             <div class="page-title">Investments</div>
             <div class="page-sub">Stocks, MFs, ULIP, NPS, EPF, FDs & gold</div>
         </div>
+        <button class="btn btn-ghost" id="inv-refresh-btn" onclick="refreshAllPrices()"
+                style="font-size:13px;padding:8px 14px;white-space:nowrap"
+                title="Fetch the latest price for every holding that has a ticker">\u21bb Refresh prices</button>
         <button class="btn btn-primary" onclick="openAddInvestForm()" style="font-size:13px;padding:8px 16px;white-space:nowrap">+ Add Investment</button>
     </div>
 
@@ -3256,7 +3288,7 @@
             <div class="form-row">
                 <div class="form-group" style="margin:0">
                     <label class="form-label">Type</label>
-                    <select class="form-input" id="inv-type" onchange="onInvestTypeChange()"></select>
+                    <select class="form-input" id="inv-type" onchange="onInvestTypeChange();toggleUnitsFields()"></select>
                 </div>
                 <div class="form-group" style="margin:0">
                     <label class="form-label">Name</label>
@@ -3326,6 +3358,23 @@
                     <label class="form-label">Current Value</label>
                     <input class="form-input" type="number" id="inv-current" placeholder="Defaults to invested" step="0.01" min="0">
                 </div>
+            </div>
+            <div id="inv-units-fields" style="display:none">
+              <div class="form-row" style="gap:10px">
+                <div class="form-group" style="margin:0">
+                    <label class="form-label">Units / shares held</label>
+                    <input class="form-input" type="number" id="inv-qty" placeholder="e.g. 25" step="0.0001" min="0" oninput="syncUnitsValue()">
+                </div>
+                <div class="form-group" style="margin:0">
+                    <label class="form-label">Price per unit</label>
+                    <input class="form-input" type="number" id="inv-unitprice" placeholder="latest known" step="0.0001" min="0" oninput="syncUnitsValue()">
+                </div>
+              </div>
+              <div class="form-group" style="margin:0">
+                  <label class="form-label">Ticker <span style="color:var(--text2);text-transform:none;font-size:11px">(optional — for live prices)</span></label>
+                  <input class="form-input" type="text" id="inv-symbol" placeholder="e.g. AAPL, or RELIANCE.BSE" autocomplete="off" spellcheck="false">
+                  <div id="inv-units-note" style="font-size:11.5px;color:var(--text2);line-height:1.6;margin-top:6px"></div>
+              </div>
             </div>
             <div class="form-group" style="margin:0" id="inv-source-row">
                 <label class="form-label">Paid from</label>
@@ -4627,6 +4676,9 @@ function renderSettingsPage() {
       <div style="padding-top:6px"></div>
       ${row('☁️','Cloud sync', syncEnabled() ? 'On' + (syncUser?.email ? ' · ' + esc(syncUser.email) : '') : 'Off', syncEnabled() ? 'Turn off' : 'Turn on', 'toggleSync();renderSettingsPage()')}
       ${row('🔧','Firebase config', fbConfig() ? 'Saved on this device' : 'Not set on this device', 'Edit', 'openFbCfgModal()')}
+      ${row('📈','Market data', quoteKey()
+          ? `${QUOTE_PROVIDERS[quoteProvider()]?.label || quoteProvider()} · key saved on this device`
+          : 'Not set — needed for live share prices', quoteKey() ? 'Change' : 'Set up', 'openQuoteCfgModal()')}
       ${row('⬇️','Export CSV', 'This month, as a spreadsheet file', 'Export', 'exportCSV()')}
       ${row('🔔','Reminders', 'Bill and payment nudges', 'Open', 'openReminderModal()')}
       ${row('🩹','Recover data', (() => {
@@ -11550,7 +11602,16 @@ function investCurrentValue(r) {
       return base * Math.pow(1 + (r.fdRate / 100) / 4, 4 * years);
     }
   }
+  // Units held times the last price beats a figure typed by hand and never
+  // updated. Only when both are present, so a holding entered the old way is
+  // untouched.
+  if (unitsPriced(r)) return (Number(r.qty) || 0) * (Number(r.unitPrice) || 0);
   return r.current || 0;
+}
+// Which holdings are counted as units rather than a lump: shares and funds.
+function unitsCapable(r) { return r && (r.type === 'stock' || r.type === 'mf' || r.type === 'gold'); }
+function unitsPriced(r) {
+  return unitsCapable(r) && !r.closed && (Number(r.qty) || 0) > 0 && (Number(r.unitPrice) || 0) > 0;
 }
 function isAutoFD(r) {
   return r.type === 'fd' && !r.closed && fdBase(r) > 0 &&
@@ -11570,6 +11631,173 @@ function fdIsMatured(r) {
 // Cash already taken out of a holding (interest credited + withdrawals)
 function investRealized(r) { return r.realized || 0; }
 
+// Current value is derived from units once you have them, so the typed figure
+// would only ever be a stale contradiction. Show what it works out to instead.
+function syncUnitsValue() {
+  const qty = parseFloat(document.getElementById('inv-qty')?.value) || 0;
+  const px  = parseFloat(document.getElementById('inv-unitprice')?.value) || 0;
+  const note = document.getElementById('inv-units-note');
+  const cur  = document.getElementById('inv-currency')?.value || 'USD';
+  const curEl = document.getElementById('inv-current');
+  if (qty > 0 && px > 0) {
+    const v = qty * px;
+    if (curEl) { curEl.value = v.toFixed(2); curEl.readOnly = true; curEl.style.opacity = '.7'; }
+    if (note) note.innerHTML = `Current value <strong>${fmtCurrency(v, cur)}</strong> \u2014 ${qty} \u00d7 ${fmtCurrency(px, cur)}, kept in step as the price changes.`;
+  } else {
+    if (curEl) { curEl.readOnly = false; curEl.style.opacity = ''; }
+    if (note) note.innerHTML = qty > 0 || px > 0
+      ? 'Enter both units and price and the current value is worked out for you.'
+      : 'Leave these empty to type the current value yourself.';
+  }
+}
+
+function toggleUnitsFields() {
+  const t = document.getElementById('inv-type')?.value;
+  const wrap = document.getElementById('inv-units-fields');
+  if (wrap) wrap.style.display = unitsCapable({ type: t }) ? '' : 'none';
+  syncUnitsValue();
+}
+
+function openQuoteCfgModal() {
+  const sel = document.getElementById('qc-provider');
+  sel.innerHTML = Object.entries(QUOTE_PROVIDERS)
+    .map(([k, v]) => `<option value="${k}">${v.label} — free tier ${v.free}</option>`).join('');
+  sel.value = quoteProvider();
+  document.getElementById('qc-key').value = quoteKey();
+  document.getElementById('qc-status').textContent = '';
+  onQuoteProviderChange();
+  document.getElementById('quotecfg-modal').classList.add('open');
+}
+function closeQuoteCfgModal() { document.getElementById('quotecfg-modal').classList.remove('open'); }
+
+function onQuoteProviderChange() {
+  const prov = QUOTE_PROVIDERS[document.getElementById('qc-provider').value];
+  const hint = document.getElementById('qc-hint');
+  if (prov && hint) {
+    hint.innerHTML = `${esc(prov.hint)}<br>Get a free key at <a href="${prov.signup}" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">${esc(prov.signup)}</a>`;
+  }
+}
+
+// Proves the key works before it is relied on, rather than discovering it is
+// wrong halfway through refreshing a portfolio.
+async function testQuoteKey() {
+  const st = document.getElementById('qc-status');
+  const provider = document.getElementById('qc-provider').value;
+  const key = document.getElementById('qc-key').value.trim();
+  if (!key) { st.innerHTML = '<span style="color:var(--danger)">Paste a key first.</span>'; return; }
+  st.textContent = 'Checking…';
+  const prevP = quoteProvider(), prevK = quoteKey();
+  setQuoteConfig(provider, key);
+  const { price, error } = await fetchQuote('AAPL');
+  setQuoteConfig(prevP, prevK);            // do not save on a test
+  st.innerHTML = price != null
+    ? `<span style="color:var(--grocery)">Works — AAPL came back at ${price}.</span>`
+    : `<span style="color:var(--danger)">${esc(error || 'No price returned')}</span>`;
+}
+
+function saveQuoteCfg() {
+  const provider = document.getElementById('qc-provider').value;
+  const key = document.getElementById('qc-key').value.trim();
+  setQuoteConfig(provider, key);
+  closeQuoteCfgModal();
+  if (curPage === 'settings') renderSettingsPage();
+  toast(key ? 'Market data key saved ✓' : 'Market data key cleared');
+}
+
+// ── Live prices ──
+// Every keyless quote source worth having refuses cross-origin requests, so
+// this needs a key of your own. Stored on this device like the Firebase config
+// and never committed, and the lookup is manual: refreshing sends your tickers
+// to whichever provider you picked, and that should be a thing you choose to
+// do rather than something the app does behind you.
+const QUOTE_PROVIDERS = {
+  twelvedata: {
+    label: 'Twelve Data', free: '800 calls a day',
+    signup: 'https://twelvedata.com/pricing',
+    hint: 'US tickers as AAPL. Indian as RELIANCE:NSE or RELIANCE:BSE.',
+    url: (sym, key) => `https://api.twelvedata.com/price?symbol=${encodeURIComponent(sym)}&apikey=${encodeURIComponent(key)}`,
+    parse: j => {
+      if (j && j.price != null) { const n = Number(j.price); return Number.isFinite(n) ? n : null; }
+      return null;
+    },
+    error: j => (j && (j.message || j.status === 'error')) ? (j.message || 'rejected') : null
+  },
+  alphavantage: {
+    label: 'Alpha Vantage', free: '25 calls a day',
+    signup: 'https://www.alphavantage.co/support/#api-key',
+    hint: 'US tickers as AAPL. Indian as RELIANCE.BSE.',
+    url: (sym, key) => `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${encodeURIComponent(sym)}&apikey=${encodeURIComponent(key)}`,
+    parse: j => {
+      const q = j && j['Global Quote'];
+      const n = q && Number(q['05. price']);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    },
+    error: j => (j && (j.Note || j.Information)) ? (j.Note || j.Information) : null
+  }
+};
+
+function quoteProvider() { return localStorage.getItem('expiq_quote_provider') || 'twelvedata'; }
+function quoteKey() { return localStorage.getItem('expiq_quote_key') || ''; }
+function setQuoteConfig(provider, key) {
+  if (provider) localStorage.setItem('expiq_quote_provider', provider);
+  if (key != null) {
+    if (key) localStorage.setItem('expiq_quote_key', key); else localStorage.removeItem('expiq_quote_key');
+  }
+}
+
+async function fetchQuote(symbol) {
+  const prov = QUOTE_PROVIDERS[quoteProvider()];
+  const key = quoteKey();
+  if (!prov) return { error: 'No provider chosen' };
+  if (!key) return { error: 'No API key set' };
+  try {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), 12000);
+    const res = await fetch(prov.url(symbol, key), { signal: ac.signal, cache: 'no-store' });
+    clearTimeout(t);
+    const j = await res.json();
+    const bad = prov.error(j);
+    if (bad) return { error: String(bad).slice(0, 160) };
+    const price = prov.parse(j);
+    return price != null ? { price } : { error: 'No price for ' + symbol };
+  } catch (e) {
+    return { error: e.name === 'AbortError' ? 'Timed out' : 'Could not reach ' + prov.label };
+  }
+}
+
+let refreshingPrices = false;
+async function refreshAllPrices() {
+  if (refreshingPrices) return;
+  const holdings = getInvestDB().filter(r => !r.closed && r.symbol && unitsCapable(r));
+  if (!holdings.length) { toast('\u26a0\ufe0f No holdings with a ticker yet'); return; }
+  if (!quoteKey()) { toast('\u26a0\ufe0f Add a market-data key first \u2014 Settings \u2192 Market data'); return; }
+  refreshingPrices = true;
+  const btn = document.getElementById('inv-refresh-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '\u21bb Fetching\u2026'; }
+
+  let done = 0; const failed = [];
+  // One at a time, on purpose: free tiers are rate-limited per minute and a
+  // burst gets the whole batch rejected.
+  for (const r of holdings) {
+    const { price, error } = await fetchQuote(r.symbol);
+    if (price != null) {
+      r.unitPrice = price;
+      r.priceAt = Date.now();
+      if ((Number(r.qty) || 0) > 0) r.current = (Number(r.qty) || 0) * price;
+      done++;
+    } else {
+      failed.push(`${r.symbol}: ${error}`);
+    }
+  }
+  save(DB);
+  refreshingPrices = false;
+  if (btn) { btn.disabled = false; btn.textContent = '\u21bb Refresh prices'; }
+  renderInvestments(); renderCurrent();
+  if (done && !failed.length) toast(`\u2713 ${done} price${done !== 1 ? 's' : ''} updated`);
+  else if (done) toast(`\u2713 ${done} updated \u00b7 ${failed.length} failed \u2014 ${failed[0]}`);
+  else toast('\u26a0\ufe0f ' + (failed[0] || 'Nothing updated'));
+}
+
 function openAddInvestForm() {
   editInvestId = null;
   document.getElementById('invest-form-hd').textContent = 'New Investment';
@@ -11588,8 +11816,13 @@ function openAddInvestForm() {
   document.getElementById('inv-ulip-fund').value = '';
   document.getElementById('inv-ulip-fundval').value = '';
   ulipFundTouched = false;
+  ['inv-qty','inv-unitprice','inv-symbol'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.value = '';
+  });
+  toggleUnitsFields();
   fillInvestSources('');
   onInvestTypeChange();
+  toggleUnitsFields();
   document.getElementById('add-invest-form').style.display = 'block';
   document.getElementById('inv-name').focus();
 }
@@ -11614,6 +11847,10 @@ function openEditInvestForm(id) {
   document.getElementById('inv-ulip-fund').value = r.ulipFund || '';
   document.getElementById('inv-ulip-fundval').value = r.ulipFundValue ?? '';
   ulipFundTouched = true; // keep the stored fund split — don't auto-overwrite it
+  document.getElementById('inv-qty').value = r.qty || '';
+  document.getElementById('inv-unitprice').value = r.unitPrice || '';
+  document.getElementById('inv-symbol').value = r.symbol || '';
+  toggleUnitsFields();
   fillInvestSources(r.fundedFrom || '');
   onInvestSourceChange();                 // locks it: editing never moves money
   onInvestTypeChange();
@@ -11665,6 +11902,15 @@ function saveInvestment() {
 
   // Type-specific fields
   const extra = {};
+  if (unitsCapable({ type })) {
+    const qty = parseFloat(document.getElementById('inv-qty').value) || 0;
+    const px  = parseFloat(document.getElementById('inv-unitprice').value) || 0;
+    const sym = document.getElementById('inv-symbol').value.trim().toUpperCase();
+    if (qty > 0) extra.qty = qty;
+    if (px > 0)  extra.unitPrice = px;
+    if (sym)     extra.symbol = sym;
+    if (qty > 0 && px > 0) current = qty * px;
+  }
   if (type === 'fd') {
     const fdOpen = document.getElementById('inv-fd-open').value || '';
     const fdMaturity = document.getElementById('inv-fd-maturity').value || '';
@@ -11700,6 +11946,7 @@ function saveInvestment() {
   const clearTypeFields = r => {
     if (r.type !== 'fd') { delete r.fdRate; delete r.fdMaturityAmt; delete r.fdOpen; delete r.fdMaturity; }
     if (r.type !== 'ulip') { delete r.ulipPremium; delete r.ulipFund; delete r.ulipCharges; delete r.ulipFundValue; }
+    if (!unitsCapable(r)) { delete r.qty; delete r.unitPrice; delete r.symbol; delete r.priceAt; }
   };
 
   if (editInvestId) {
@@ -12122,9 +12369,19 @@ function renderInvestments() {
   }).join('') + `</div>` : '';
 
   // Sections per type (in fixed order), only types that have entries
-  const sections = Object.entries(INVEST_TYPES).map(([key, meta]) => {
-    const items = active.filter(r => r.type === key);
-    if (!items.length) return '';
+  // A type holding more than one currency is really two portfolios: dollars and
+  // rupees do not add up, and a single total across them means nothing. Split
+  // only when it is actually mixed, so a single-currency list looks unchanged.
+  const sections = Object.entries(INVEST_TYPES).flatMap(([key, meta]) => {
+    const ofType = active.filter(r => r.type === key);
+    if (!ofType.length) return [''];
+    const curs = [...new Set(ofType.map(r => r.currency || 'USD'))].sort();
+    return curs.length > 1
+      ? curs.map(cu => ({ key, meta, items: ofType.filter(r => (r.currency || 'USD') === cu), cu }))
+      : [{ key, meta, items: ofType, cu: null }];
+  }).map(sec => {
+    if (!sec || typeof sec === 'string') return '';
+    const { meta, items, cu } = sec;
     const tInv = {}, tCur = {};
     items.forEach(r => {
       const c = r.currency || 'USD';
@@ -12165,7 +12422,11 @@ function renderInvestments() {
       return `<div style="display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--border);flex-wrap:wrap${isMat ? ';background:rgba(245,158,11,.06)' : ''}">
         <div style="flex:1;min-width:140px">
           <div style="font-size:13.5px;font-weight:600">${esc(r.name)}${isMat ? ' <span style="font-size:10px;font-weight:700;color:var(--accent);background:rgba(245,158,11,.15);padding:2px 7px;border-radius:20px">MATURED</span>' : ''}</div>
-          <div style="font-size:11px;color:var(--text2);margin-top:2px">${c}${fdMeta}${r.note ? ' · ' + esc(r.note) : ''} · added ${r.date || ''}</div>
+          <div style="font-size:11px;color:var(--text2);margin-top:2px">${c}${
+            unitsPriced(r) ? ` \u00b7 ${r.qty} \u00d7 ${fmtCurrency(r.unitPrice, c)}${
+              r.symbol ? ` \u00b7 <span style="color:var(--fixed)">${esc(r.symbol)}</span>` : ''}${
+              r.priceAt ? ` \u00b7 priced ${new Date(r.priceAt).toLocaleDateString()}` : ''}` : ''
+          }${fdMeta}${r.note ? ' · ' + esc(r.note) : ''} · added ${r.date || ''}</div>
         </div>
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           <div>
@@ -12190,7 +12451,7 @@ function renderInvestments() {
     }).join('');
     return `<div class="acc-section" style="margin-bottom:16px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-        <span style="font-size:14px;font-weight:700">${meta.icon} ${meta.label} <span style="color:var(--text2);font-weight:400;font-size:12px">(${items.length})</span></span>
+        <span style="font-size:14px;font-weight:700">${meta.icon} ${meta.label}${cu ? ` <span style="color:var(--text2);font-weight:600">\u00b7 ${esc(cu)}</span>` : ''} <span style="color:var(--text2);font-weight:400;font-size:12px">(${items.length})</span></span>
         <span style="font-size:13px;font-weight:700">${fmtMap(tCur)}</span>
       </div>
       <div style="border:1px solid var(--border);border-radius:10px;overflow:hidden">${rows}</div>
@@ -14671,8 +14932,14 @@ let __appSig = null;
 //  than eval: the text comes off the network, and nothing off the network should
 //  ever be executed, even from your own origin.
 // ══════════════════════════════════════════════════
-const APP_VERSION = '4.7';
+const APP_VERSION = '4.8';
 const CHANGELOG = /* CHANGELOG_JSON */ [
+  { "v": "4.8", "date": "2026-11-13", "notes": [
+      "Hold shares as units and a price instead of one typed figure — the current value is worked out for you, and stays right as the price moves",
+      "Dollar and rupee holdings are listed separately, because a single total across two currencies means nothing",
+      "Live prices: add a free market-data key under Settings → Market data, put a ticker on each holding, and Refresh prices on the Investments page fetches them",
+      "Refreshing is a button, never automatic — it sends your tickers to the provider you chose, and that should be your decision"
+  ]},
   { "v": "4.7", "date": "2026-11-09", "notes": [
       "Adding an investment can now say which account it was paid from, and the money actually comes off that account",
       "Defaults to leaving balances alone, for a holding you already had — only pick an account when the money is leaving now",
