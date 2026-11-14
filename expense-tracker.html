@@ -2959,7 +2959,7 @@
         <details class="ln-sect"><summary class="ln-sum">Rate changes</summary><div class="ln-body">
         <p style="font-size:11.5px;color:var(--text2);line-height:1.6;margin:0 0 10px">
             For a floating rate. Add the date each new rate took effect and the rate from
-            then on \u2014 interest before that date keeps accruing at the old rate, so your
+            then on — interest before that date keeps accruing at the old rate, so your
             past figures do not move. Leave empty for a fixed-rate loan.
         </p>
         <div id="ln-rate-rows"></div>
@@ -3299,7 +3299,7 @@
         </div>
         <button class="btn btn-ghost" id="inv-refresh-btn" onclick="refreshAllPrices()"
                 style="font-size:13px;padding:8px 14px;white-space:nowrap"
-                title="Fetch the latest price for every holding that has a ticker">\u21bb Refresh prices</button>
+                title="Fetch the latest price for every holding that has a ticker">↻ Refresh prices</button>
         <button class="btn btn-primary" onclick="openAddInvestForm()" style="font-size:13px;padding:8px 16px;white-space:nowrap">+ Add Investment</button>
     </div>
 
@@ -3424,6 +3424,7 @@
         </div>
     </div>
 
+    <div id="invest-price-banner" style="display:none;margin-bottom:14px"></div>
     <div id="invest-page-content"></div>
 </div>
 
@@ -11906,6 +11907,7 @@ function saveQuoteCfg() {
   setQuoteConfig(provider, key);
   closeQuoteCfgModal();
   if (curPage === 'settings') renderSettingsPage();
+  if (curPage === 'invest') renderInvestments();
   toast(key ? 'Market data key saved ✓' : 'Market data key cleared');
 }
 
@@ -12492,9 +12494,58 @@ function saveFDRenew() {
   } else commit();
 }
 
+// Live prices need three things lined up: a key, a ticker on each holding, and
+// a press of Refresh. Any one missing and nothing happens, which from the
+// outside looks like a feature that does not work. So say which one it is,
+// here, rather than in a toast that has already gone.
+function renderPriceBanner() {
+  const el = document.getElementById('invest-price-banner');
+  if (!el) return;
+  const holdings = getInvestDB().filter(r => !r.closed && unitsCapable(r));
+  const withTicker = holdings.filter(r => r.symbol);
+  const haveKey = !!quoteKey();
+
+  let msg = '', action = '', tone = 'var(--accent)';
+  if (!holdings.length) { el.style.display = 'none'; return; }
+
+  if (!haveKey && !withTicker.length) {
+    msg = 'Live prices are off. They need a free market-data key, and a ticker on each holding.';
+    action = `<button class="btn btn-ghost set-btn" onclick="openQuoteCfgModal()">Set up the key</button>`;
+  } else if (!haveKey) {
+    msg = `${withTicker.length} holding${withTicker.length !== 1 ? 's have' : ' has'} a ticker, but there is no market-data key yet.`;
+    action = `<button class="btn btn-primary set-btn" onclick="openQuoteCfgModal()">Add the key</button>`;
+  } else if (!withTicker.length) {
+    msg = 'The key is set. Add a ticker to a holding and its price can be fetched \u2014 start typing a company name in the Ticker field.';
+    action = '';
+  } else {
+    const never = withTicker.filter(r => !r.priceAt).length;
+    const newest = Math.max(...withTicker.map(r => r.priceAt || 0));
+    if (never === withTicker.length) {
+      msg = `Ready \u2014 ${withTicker.length} holding${withTicker.length !== 1 ? 's' : ''} with a ticker, never priced yet.`;
+      action = `<button class="btn btn-primary set-btn" onclick="refreshAllPrices()">\u21bb Fetch prices</button>`;
+    } else {
+      const days = Math.floor((Date.now() - newest) / 86400000);
+      if (days < 1) { el.style.display = 'none'; return; }   // priced today: nothing to say
+      tone = 'var(--text2)';
+      msg = `Prices last fetched ${days} day${days !== 1 ? 's' : ''} ago.` +
+            (never ? ` ${never} holding${never !== 1 ? 's have' : ' has'} never been priced.` : '');
+      action = `<button class="btn btn-ghost set-btn" onclick="refreshAllPrices()">\u21bb Refresh</button>`;
+    }
+  }
+
+  el.style.display = '';
+  el.innerHTML = `<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+       background:var(--surface2);border:1px solid var(--border2);border-left:3px solid ${tone};
+       border-radius:10px;padding:11px 14px">
+    <span style="flex:1;min-width:200px;font-size:12.5px;color:var(--text2);line-height:1.6">${msg}</span>
+    ${action}
+  </div>`;
+}
+
 function renderInvestments() {
   const el = document.getElementById('invest-page-content');
   if (!el) return;
+  renderPriceBanner();
   const all = getInvestDB();
 
   if (!all.length) {
@@ -15137,8 +15188,13 @@ let __appSig = null;
 //  than eval: the text comes off the network, and nothing off the network should
 //  ever be executed, even from your own origin.
 // ══════════════════════════════════════════════════
-const APP_VERSION = '5.0';
+const APP_VERSION = '5.1';
 const CHANGELOG = /* CHANGELOG_JSON */ [
+  { "v": "5.1", "date": "2026-11-13", "notes": [
+      "The Investments page now says why live prices are not showing, and offers the button that fixes it, instead of doing nothing",
+      "It also tells you when prices were last fetched, and disappears once they are current",
+      "Fixed the Refresh prices button showing a raw escape code instead of its arrow"
+  ]},
   { "v": "5.0", "date": "2026-11-13", "notes": [
       "Start typing a company in the ticker field and it suggests matches — no need to open anything or look it up elsewhere",
       "Each suggestion shows the exchange and currency, since the same company lists on several and they are not the same shares",
